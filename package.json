@@ -46,8 +46,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "embedding:test": "node scripts/embedding-test.mjs",
-    "embedding:pipeline-test": "tsx scripts/embedding-pipeline-test.ts",
-    "postinstall": "electron-builder install-app-deps"
+    "embedding:pipeline-test": "tsx scripts/embedding-pipeline-test.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.2",
