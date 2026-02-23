@@ -10,7 +10,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@/lib/mcp/stdio-transport";
 import type { ResolvedMCPServer, MCPDiscoveredTool, MCPServerStatus } from "./types";
-import { onFolderChange } from "@/lib/vectordb/folder-events";
 import { taskRegistry } from "@/lib/background-tasks/registry";
 import { hasFilesystemPathArg, resolveMCPConfig } from "./mcp-config-resolver";
 
@@ -36,7 +35,7 @@ class MCPClientManager {
     private transports: Map<string, StdioClientTransport | SSEClientTransport> = new Map();
     private characterMcpServers: Map<string, string[]> = new Map(); // Track which servers belong to which character
     private serverCharacterContext: Map<string, string | undefined> = new Map(); // Track characterId used for each server connection
-    
+
     /** Track servers currently being connected to prevent race conditions */
     private connectingServers: Map<string, Promise<MCPServerStatus>> = new Map();
 
@@ -58,14 +57,7 @@ class MCPClientManager {
     } | null = null;
 
     private constructor() {
-        // Register folder change listener for auto-reconnection
-        onFolderChange(async (characterId, event) => {
-            console.log(`[MCP] Folder change detected for character ${characterId}:`, event);
-
-            // Reconnect on any change (added, removed, or primary_changed) 
-            // because SYNCED_FOLDERS_ARRAY and SYNCED_FOLDERS change on any folder update.
-            await this.reconnectForCharacter(characterId);
-        });
+        // Initialization without local DB listeners
     }
 
     static getInstance(): MCPClientManager {
@@ -94,7 +86,7 @@ class MCPClientManager {
         // Create a promise that will be resolved when connection completes
         const connectionPromise = this._doConnect(serverName, config, characterId);
         this.connectingServers.set(serverName, connectionPromise);
-        
+
         try {
             return await connectionPromise;
         } finally {
@@ -118,7 +110,7 @@ class MCPClientManager {
                 this.characterMcpServers.set(characterId, servers);
             }
         }
-        
+
         // Skip if already connected with same context
         if (this.isConnected(serverName)) {
             const existingContext = this.serverCharacterContext.get(serverName);
@@ -133,7 +125,7 @@ class MCPClientManager {
                 };
             }
         }
-        
+
         // Disconnect existing connection if any
         await this.disconnect(serverName);
 
@@ -334,14 +326,8 @@ class MCPClientManager {
             failedServers: [],
         });
 
-        // Emit reload started event
-        const { notifyFolderChange } = await import("@/lib/vectordb/folder-events");
-        notifyFolderChange(characterId, {
-            type: "mcp_reload_started",
-            folderId: "", // Not folder-specific
-            totalServers: serverNames.length,
-            estimatedDuration: serverNames.length * 5000, // 5s per server estimate
-        });
+        // Emit reload started event (no-op stub without folder-events)
+        console.log(`[MCP] Dispatching mcp reload started: ${serverNames.length} servers`);
 
         console.log(`[MCP] Reconnecting ${serverNames.length} servers for character ${characterId} due to folder change...`);
 
@@ -380,14 +366,8 @@ class MCPClientManager {
                     if (state) {
                         state.completedServers++;
 
-                        // Emit progress update
-                        notifyFolderChange(characterId, {
-                            type: "mcp_reload_started", // Use same type for progress updates
-                            folderId: "",
-                            serverName,
-                            totalServers: state.totalServers,
-                            completedServers: state.completedServers,
-                        });
+                        // Emit progress update - disabled on Web SaaS
+                        console.log(`[MCP] Reloaded ${serverName}`);
                     }
                 }
             } catch (error) {
@@ -407,14 +387,10 @@ class MCPClientManager {
         if (state) {
             state.isReloading = false;
 
-            notifyFolderChange(characterId, {
+            console.log(`[MCP] Reload status:`, {
                 type: state.failedServers.length > 0 ? "mcp_reload_failed" : "mcp_reload_completed",
-                folderId: "",
                 totalServers: state.totalServers,
                 completedServers: state.completedServers,
-                error: state.failedServers.length > 0
-                    ? `Failed to reload: ${state.failedServers.join(", ")}`
-                    : undefined,
             });
         }
     }

@@ -6,11 +6,11 @@
  */
 
 import { CronJob } from "cron";
-import { db } from "@/lib/db/sqlite-client";
-import { scheduledTasks, scheduledTaskRuns, type ScheduledTask, type ContextSource } from "@/lib/db/sqlite-schedule-schema";
+import { db } from "@/lib/db/client";
+import { scheduledTasks, scheduledTaskRuns } from "@/lib/db/schema";
+import type { ScheduledTask, ContextSource } from "@/lib/db/schema";
 import { eq, and, lte, isNull, or } from "drizzle-orm";
 import { TaskQueue } from "./task-queue";
-import { nowISO } from "@/lib/utils/timestamp";
 import { resolveTimezone } from "@/lib/utils/timezone";
 
 interface SchedulerConfig {
@@ -29,7 +29,7 @@ export class SchedulerService {
   constructor(config: SchedulerConfig = {}) {
     this.config = {
       checkIntervalMs: config.checkIntervalMs ?? 60_000,
-      maxConcurrentTasks: config.maxConcurrentTasks ?? 1, // Default to 1 for sequential execution
+      maxConcurrentTasks: config.maxConcurrentTasks ?? 1,
       enabled: config.enabled ?? true,
     };
     this.taskQueue = new TaskQueue({
@@ -37,9 +37,6 @@ export class SchedulerService {
     });
   }
 
-  /**
-   * Start the scheduler service
-   */
   async start(): Promise<void> {
     if (this.isRunning) {
       console.log("[Scheduler] Already running, skipping start");
@@ -53,65 +50,49 @@ export class SchedulerService {
 
     console.log("[Scheduler] Starting scheduler service...");
 
-    // Load all enabled schedules
     await this.loadSchedules();
 
-    // Start periodic check for due tasks (catches missed runs)
     this.checkInterval = setInterval(
       () => this.checkAndQueueDueTasks(),
       this.config.checkIntervalMs
     );
 
-    // Start the task queue processor
     this.taskQueue.start();
   }
 
-  /**
-   * Stop the scheduler service
-   */
   async stop(): Promise<void> {
     if (!this.isRunning) return;
 
     console.log("[Scheduler] Stopping scheduler service");
 
-    // Stop all cron jobs
     for (const [, job] of this.jobs) {
       job.stop();
     }
     this.jobs.clear();
 
-    // Stop periodic check
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
       this.checkInterval = null;
     }
 
-    // Stop task queue
     await this.taskQueue.stop();
 
     this.isRunning = false;
   }
 
-  /**
-   * Load and register all enabled schedules from database
-   */
   async loadSchedules(): Promise<void> {
     const schedules = await db.query.scheduledTasks.findMany({
       where: and(eq(scheduledTasks.enabled, true), eq(scheduledTasks.status, 'active')),
     });
 
     for (const schedule of schedules) {
-      this.registerSchedule(schedule);
+      this.registerSchedule(schedule as any);
     }
 
     console.log(`[Scheduler] Loaded ${schedules.length} active schedules`);
   }
 
-  /**
-   * Register a single schedule as a cron job
-   */
   registerSchedule(schedule: ScheduledTask): void {
-    // Remove existing job if any
     if (this.jobs.has(schedule.id)) {
       this.jobs.get(schedule.id)?.stop();
       this.jobs.delete(schedule.id);
@@ -119,8 +100,6 @@ export class SchedulerService {
 
     if (!schedule.enabled || schedule.status !== "active") return;
 
-    // Resolve timezone - handles "local::America/New_York" format
-    // This extracts the concrete timezone for server-side execution
     const concreteTimezone = resolveTimezone(schedule.timezone);
 
     if (schedule.scheduleType === "cron" && schedule.cronExpression) {
@@ -134,8 +113,7 @@ export class SchedulerService {
         );
         this.jobs.set(schedule.id, job);
 
-        // Update next run time
-        const nextRun = job.nextDate().toISO();
+        const nextRun = job.nextDate().toDate();
         if (nextRun) {
           void this.updateNextRunTime(schedule.id, nextRun);
         }
@@ -145,7 +123,6 @@ export class SchedulerService {
         console.error(`[Scheduler] Failed to register cron job for "${schedule.name}":`, error);
       }
     } else if (schedule.scheduleType === "once" && schedule.scheduledAt) {
-      // One-time schedule - only register if in the future
       const scheduledTime = new Date(schedule.scheduledAt);
       if (scheduledTime > new Date()) {
         try {
@@ -163,43 +140,38 @@ export class SchedulerService {
         }
       }
     }
-    // Interval-based schedules are handled by checkAndQueueDueTasks
   }
 
-  /**
-   * Trigger a scheduled task (queue it for execution)
-   */
   async triggerTask(taskId: string): Promise<void> {
     const task = await db.query.scheduledTasks.findFirst({
       where: eq(scheduledTasks.id, taskId),
       with: {
         character: true,
-      },
+      } as any,
     });
 
     if (!task || !task.enabled || task.status !== "active") {
-      console.log(`[Scheduler] Task ${taskId} not found, disabled, or not active (status: ${task?.status}), skipping`);
+      console.log(`[Scheduler] Task ${taskId} not found, disabled, or not active, skipping`);
       return;
     }
 
     console.log(`[Scheduler] Triggering task "${task.name}"`);
 
-    // Create a run record
+    const now = new Date();
     const [run] = await db.insert(scheduledTaskRuns).values({
       taskId: task.id,
       status: "pending",
-      scheduledFor: nowISO(),
+      scheduledFor: now,
       resolvedPrompt: this.resolvePromptVariables(
         task.initialPrompt,
         (task.promptVariables as Record<string, string>) || {},
         {
-          agentName: task.character?.name || task.character?.displayName || "Agent",
-          lastRunAt: task.lastRunAt || undefined,
+          agentName: (task as any).character?.name || (task as any).character?.displayName || "Agent",
+          lastRunAt: task.lastRunAt ? task.lastRunAt.toISOString() : undefined,
         }
       ),
     }).returning();
 
-    // Queue for execution
     this.taskQueue.enqueue({
       runId: run.id,
       taskId: task.id,
@@ -210,20 +182,16 @@ export class SchedulerService {
       contextSources: (task.contextSources as ContextSource[]) || [],
       timeoutMs: task.timeoutMs,
       maxRetries: task.maxRetries,
-      priority: task.priority,
+      priority: task.priority as any,
       createNewSession: task.createNewSessionPerRun,
       existingSessionId: task.resultSessionId || undefined,
     });
 
-    // Update last run time
     await db.update(scheduledTasks)
-      .set({ lastRunAt: nowISO() })
+      .set({ lastRunAt: now })
       .where(eq(scheduledTasks.id, taskId));
   }
 
-  /**
-   * Resolve template variables in prompt
-   */
   private resolvePromptVariables(
     prompt: string,
     variables: Record<string, string>,
@@ -246,30 +214,20 @@ export class SchedulerService {
     };
 
     let resolved = prompt;
-
-    // Replace built-in variables
     for (const [key, value] of Object.entries(builtInVars)) {
       resolved = resolved.replaceAll(key, value);
     }
-
-    // Replace custom variables
     for (const [key, value] of Object.entries(variables)) {
       resolved = resolved.replaceAll(`{{${key}}}`, value);
     }
-
     return resolved;
   }
 
-  /**
-   * Check for due tasks and queue them (handles interval-based + missed runs)
-   */
   private async checkAndQueueDueTasks(): Promise<void> {
-    const now = new Date().toISOString();
+    const now = new Date();
 
-    // Check for paused schedules that should auto-resume
     await this.checkPausedSchedules(now);
 
-    // Find interval-based tasks that are due
     const dueTasks = await db.query.scheduledTasks.findMany({
       where: and(
         eq(scheduledTasks.enabled, true),
@@ -285,20 +243,15 @@ export class SchedulerService {
     for (const task of dueTasks) {
       await this.triggerTask(task.id);
 
-      // Calculate next run time for interval-based tasks
       if (task.intervalMinutes) {
         const nextRun = new Date(Date.now() + task.intervalMinutes * 60 * 1000);
-        await this.updateNextRunTime(task.id, nextRun.toISOString());
+        await this.updateNextRunTime(task.id, nextRun);
       }
     }
   }
 
-  /**
-   * Check for paused schedules that should auto-resume
-   */
-  private async checkPausedSchedules(now: string): Promise<void> {
+  private async checkPausedSchedules(now: Date): Promise<void> {
     try {
-      // Find schedules that are paused but should auto-resume
       const toResume = await db.query.scheduledTasks.findMany({
         where: and(
           eq(scheduledTasks.enabled, false),
@@ -307,7 +260,6 @@ export class SchedulerService {
       });
 
       for (const task of toResume) {
-        // Only auto-resume if pausedUntil is set (not indefinite pause)
         if (task.pausedUntil) {
           await db.update(scheduledTasks)
             .set({
@@ -319,7 +271,7 @@ export class SchedulerService {
             })
             .where(eq(scheduledTasks.id, task.id));
 
-          this.registerSchedule({ ...task, enabled: true, pausedAt: null, pausedUntil: null, pauseReason: null });
+          this.registerSchedule({ ...task, enabled: true, pausedAt: null, pausedUntil: null, pauseReason: null } as any);
           console.log(`[Scheduler] Auto-resumed "${task.name}"`);
         }
       }
@@ -328,32 +280,25 @@ export class SchedulerService {
     }
   }
 
-  private async updateNextRunTime(taskId: string, nextRunAt: string): Promise<void> {
+  private async updateNextRunTime(taskId: string, nextRunAt: Date): Promise<void> {
     await db.update(scheduledTasks)
-      .set({ nextRunAt, updatedAt: new Date().toISOString() })
+      .set({ nextRunAt, updatedAt: new Date() })
       .where(eq(scheduledTasks.id, taskId));
   }
 
-  /**
-   * Reload a specific schedule (called after updates)
-   */
   async reloadSchedule(taskId: string): Promise<void> {
     const task = await db.query.scheduledTasks.findFirst({
       where: eq(scheduledTasks.id, taskId),
     });
 
     if (task) {
-      this.registerSchedule(task);
+      this.registerSchedule(task as any);
     } else {
-      // Task was deleted, remove job
       this.jobs.get(taskId)?.stop();
       this.jobs.delete(taskId);
     }
   }
 
-  /**
-   * Get scheduler status
-   */
   getStatus(): { isRunning: boolean; activeJobs: number; queueSize: number } {
     return {
       isRunning: this.isRunning,
@@ -362,18 +307,14 @@ export class SchedulerService {
     };
   }
 
-  /**
-   * Cancel a queued or running run by ID
-   */
   cancelRun(runId: string): Promise<boolean> {
     return this.taskQueue.cancel(runId);
   }
 }
 
-// Singleton instance using global to survive HMR in dev mode
 const globalForScheduler = globalThis as typeof globalThis & {
   schedulerInstance?: SchedulerService;
-  schedulerStarting?: boolean; // Prevent race conditions
+  schedulerStarting?: boolean;
 };
 
 export function getScheduler(): SchedulerService {
@@ -385,18 +326,14 @@ export function getScheduler(): SchedulerService {
 }
 
 export async function startScheduler(): Promise<void> {
-  // Double-check at the global level to prevent race conditions
   if (globalForScheduler.schedulerStarting) {
     console.log("[Scheduler] Start already in progress, skipping");
     return;
   }
   globalForScheduler.schedulerStarting = true;
-
   try {
     await getScheduler().start();
-  } finally {
-    // Keep the flag true after successful start (don't reset)
-  }
+  } finally { }
 }
 
 export function stopScheduler(): Promise<void> {

@@ -19,7 +19,6 @@ import {
 } from "../queries";
 import { createSkill } from "@/lib/skills/queries";
 import { AgentMemoryManager } from "@/lib/agent-memory";
-import { addSyncFolder, getSyncFolders, setPrimaryFolder } from "@/lib/vectordb/sync-service";
 import { getUserWorkspacePath } from "@/lib/workspace/setup";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import {
@@ -213,9 +212,7 @@ export async function createAgentFromTemplate(
     await seedTemplateMemories(characterId, template.memories);
     await seedTemplateSkills(userId, characterId, template);
 
-    if (template.syncFolders && template.syncFolders.length > 0) {
-      await configureSyncFolders(userId, characterId, template.syncFolders);
-    }
+
 
     return characterId;
   } catch (error) {
@@ -281,41 +278,7 @@ async function seedTemplateMemories(
   }
 }
 
-async function configureSyncFolders(
-  userId: string,
-  characterId: string,
-  folders: AgentTemplate["syncFolders"]
-): Promise<void> {
-  if (!folders) return;
 
-  const existingFolders = await getSyncFolders(characterId);
-  const existingPaths = new Set(existingFolders.map((folder) => resolve(folder.folderPath)));
-
-  for (const folderConfig of folders) {
-    const resolvedPath = resolve(resolvePathVariable(folderConfig.pathVariable));
-    if (existingPaths.has(resolvedPath)) {
-      continue;
-    }
-
-    try {
-      const folderId = await addSyncFolder({
-        userId,
-        characterId,
-        folderPath: resolvedPath,
-        displayName: folderConfig.displayName,
-        recursive: true,
-        includeExtensions: folderConfig.includeExtensions,
-        excludePatterns: folderConfig.excludePatterns,
-      });
-
-      if (folderConfig.isPrimary) {
-        await setPrimaryFolder(folderId, characterId);
-      }
-    } catch (error) {
-      console.warn(`[Templates] Failed to add sync folder ${resolvedPath}:`, error);
-    }
-  }
-}
 
 /**
  * Ensure system specialist agents exist for a user.

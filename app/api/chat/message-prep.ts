@@ -15,9 +15,7 @@ import {
   createRetrieveFullContentTool,
 } from "@/lib/ai/tools";
 import { createWebSearchTool } from "@/lib/ai/web-search";
-import { createVectorSearchToolV2 } from "@/lib/ai/vector-search";
-import { createReadFileTool } from "@/lib/ai/tools/read-file-tool";
-import { createLocalGrepTool } from "@/lib/ai/ripgrep";
+
 import { createSendMessageToChannelTool } from "@/lib/ai/tools/channel-tools";
 import { createRunSkillTool } from "@/lib/ai/tools/run-skill-tool";
 import { createUpdateSkillTool } from "@/lib/ai/tools/update-skill-tool";
@@ -68,21 +66,7 @@ export async function prepareMessagesForRequest(
       userId,
       sessionMetadata,
     }),
-    readFile: createReadFileTool({
-      sessionId,
-      userId,
-      characterId: characterId || null,
-    }),
-    localGrep: createLocalGrepTool({
-      sessionId,
-      characterId: characterId || null,
-    }),
-    vectorSearch: createVectorSearchToolV2({
-      sessionId,
-      userId,
-      characterId: characterId || null,
-      sessionMetadata,
-    }),
+
     docsSearch: createDocsSearchTool({
       userId,
       characterId: characterId || null,
@@ -195,14 +179,14 @@ export async function prepareMessagesForRequest(
               JSON.parse(part.input);
               console.warn(
                 `[CHAT API] Tool input at message ${idx}, part ${partIdx} is a JSON string instead of object. ` +
-                  `This may cause API errors. Tool: ${part.toolName}`
+                `This may cause API errors. Tool: ${part.toolName}`
               );
             } catch (e) {
               console.error(
                 `[CHAT API] Invalid tool input at message ${idx}, part ${partIdx}: ` +
-                  `Tool: ${part.toolName}, Input: ${part.input
-                    ?.toString()
-                    .substring(0, 100)}`
+                `Tool: ${part.toolName}, Input: ${part.input
+                  ?.toString()
+                  .substring(0, 100)}`
               );
             }
           }
@@ -246,20 +230,20 @@ export async function prepareMessagesForRequest(
     const userTz = (sessionMetadata?.userTimezone as string) || null;
     const tzOffset = userTz
       ? (() => {
-          try {
-            const fmt = new Intl.DateTimeFormat("en", {
-              timeZone: userTz,
-              timeZoneName: "shortOffset",
-            });
-            const offset =
-              fmt
-                .formatToParts(envNow)
-                .find((p) => p.type === "timeZoneName")?.value || "";
-            return offset.replace("GMT", "UTC");
-          } catch {
-            return "";
-          }
-        })()
+        try {
+          const fmt = new Intl.DateTimeFormat("en", {
+            timeZone: userTz,
+            timeZoneName: "shortOffset",
+          });
+          const offset =
+            fmt
+              .formatToParts(envNow)
+              .find((p) => p.type === "timeZoneName")?.value || "";
+          return offset.replace("GMT", "UTC");
+        } catch {
+          return "";
+        }
+      })()
       : "";
     const envBlock =
       `\n\n<environment_details>\nCurrent time: ${envNow.toISOString()}` +

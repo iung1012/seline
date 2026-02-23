@@ -36,6 +36,7 @@ import type { ContextInjectionTrackingMetadata } from "./context-injection";
 // ─── Context interface ────────────────────────────────────────────────────────
 
 export interface StreamCallbackContext {
+  userId: string;
   sessionId: string;
   characterId: string | null;
   sessionMetadata: Record<string, unknown>;
@@ -138,13 +139,13 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
           const textSnippet = step.text.substring(0, 200).replace(/\n/g, " ");
           console.warn(
             `[CHAT API] FAKE TOOL CALL DETECTED (${format}): ` +
-              `Model output tool-like syntax as text. Text: "${textSnippet}..."`
+            `Model output tool-like syntax as text. Text: "${textSnippet}..."`
           );
           console.warn(
             `[CHAT API] Fake tool call context: ` +
-              `activeTools at start: ${ctx.initialActiveToolNames.length}, ` +
-              `discoveredTools: ${ctx.discoveredTools.size}, ` +
-              `previouslyDiscovered: ${ctx.previouslyDiscoveredTools.size}`
+            `activeTools at start: ${ctx.initialActiveToolNames.length}, ` +
+            `discoveredTools: ${ctx.discoveredTools.size}, ` +
+            `previouslyDiscovered: ${ctx.previouslyDiscoveredTools.size}`
           );
         }
       }
@@ -158,31 +159,31 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       anthropicMeta.usage || (usage as any)?.raw || {};
     const cacheCreation = ctx.useCaching
       ? anthropicMeta.cacheCreationInputTokens ||
-        rawUsage.cache_creation_input_tokens ||
-        (usage as any)?.inputTokenDetails?.cacheWriteTokens ||
-        0
+      rawUsage.cache_creation_input_tokens ||
+      (usage as any)?.inputTokenDetails?.cacheWriteTokens ||
+      0
       : 0;
     const cacheRead = ctx.useCaching
       ? rawUsage.cache_read_input_tokens ||
-        (usage as any)?.inputTokenDetails?.cacheReadTokens ||
-        0
+      (usage as any)?.inputTokenDetails?.cacheReadTokens ||
+      0
       : 0;
     const systemBlocksCached =
       ctx.useCaching && Array.isArray(ctx.systemPromptValue)
         ? ctx.systemPromptValue.filter(
-            (block) =>
-              (block as any).providerOptions?.anthropic?.cacheControl
-          ).length
+          (block) =>
+            (block as any).providerOptions?.anthropic?.cacheControl
+        ).length
         : 0;
     const messagesCached =
       ctx.useCaching && ctx.cachedMessages.length > 0
         ? (() => {
-            const cacheMarkerIndex = ctx.cachedMessages.findIndex(
-              (msg) =>
-                (msg as any).providerOptions?.anthropic?.cacheControl
-            );
-            return cacheMarkerIndex > 0 ? cacheMarkerIndex : 0;
-          })()
+          const cacheMarkerIndex = ctx.cachedMessages.findIndex(
+            (msg) =>
+              (msg as any).providerOptions?.anthropic?.cacheControl
+          );
+          return cacheMarkerIndex > 0 ? cacheMarkerIndex : 0;
+        })()
         : 0;
     const basePricePerToken = 3 / 1_000_000;
     const estimatedSavingsUsd =
@@ -190,22 +191,22 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
     const cacheMetrics =
       ctx.useCaching && usage
         ? {
-            cacheReadTokens: cacheRead,
-            cacheWriteTokens: cacheCreation,
-            estimatedSavingsUsd,
-            systemBlocksCached,
-            messagesCached,
-          }
+          cacheReadTokens: cacheRead,
+          cacheWriteTokens: cacheCreation,
+          estimatedSavingsUsd,
+          systemBlocksCached,
+          messagesCached,
+        }
         : undefined;
     const messageMetadata = usage
       ? {
-          usage: {
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            totalTokens: usage.totalTokens,
-          },
-          ...(cacheMetrics ? { cache: cacheMetrics } : {}),
-        }
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+        },
+        ...(cacheMetrics ? { cache: cacheMetrics } : {}),
+      }
       : {};
 
     if (ctx.shouldEmitProgress && ctx.streamingState?.messageId) {
@@ -218,7 +219,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       finalMessageId = updated?.id ?? ctx.streamingState.messageId;
       console.log(
         `[CHAT API] Final message updated with ${content.filter((p) => p.type === "tool-call").length} tool calls, ` +
-          `${content.filter((p) => p.type === "tool-result").length} tool results`
+        `${content.filter((p) => p.type === "tool-result").length} tool results`
       );
     } else {
       const assistantMessageIndex = await nextOrderingIndex(ctx.sessionId);
@@ -235,7 +236,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       finalMessageId = created?.id;
       console.log(
         `[CHAT API] Final message created with ${content.filter((p) => p.type === "tool-call").length} tool calls, ` +
-          `${content.filter((p) => p.type === "tool-result").length} tool results`
+        `${content.filter((p) => p.type === "tool-result").length} tool results`
       );
     }
 
@@ -270,10 +271,10 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
           ) || 0,
         usage: usage
           ? {
-              inputTokens: usage.inputTokens,
-              outputTokens: usage.outputTokens,
-              totalTokens: usage.totalTokens,
-            }
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            totalTokens: usage.totalTokens,
+          }
           : undefined,
         ...(cacheMetrics ? { cache: cacheMetrics } : {}),
       });
@@ -291,9 +292,9 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       if (cacheCreation > 0 || cacheRead > 0) {
         console.log(
           `[CACHE] Performance: ${cacheRead} tokens read (hits), ` +
-            `${cacheCreation} tokens written (new cache), ` +
-            `${systemBlocksCached} system blocks cached, ` +
-            `${messagesCached} messages cached`
+          `${cacheCreation} tokens written (new cache), ` +
+          `${systemBlocksCached} system blocks cached, ` +
+          `${messagesCached} messages cached`
         );
 
         if (cacheRead > 0) {
@@ -304,7 +305,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
       } else if (systemBlocksCached > 0 || messagesCached > 0) {
         console.log(
           `[CACHE] Debug: Cache markers applied (${systemBlocksCached} system blocks, ${messagesCached} messages) ` +
-            `but no cache metrics returned. Provider metadata: ${JSON.stringify(anthropicMeta)}`
+          `but no cache metrics returned. Provider metadata: ${JSON.stringify(anthropicMeta)}`
         );
       }
     }
@@ -360,7 +361,7 @@ export function createOnFinishCallback(ctx: StreamCallbackContext) {
           discoveredTools: discoveredToolsMetadata,
         }),
       },
-    });
+    }, ctx.userId);
 
     console.log(`[CHAT API] session metadata updated: ${!!updatedSession}`);
     if (updatedSession) {

@@ -1,7 +1,7 @@
-import { db } from "./sqlite-client";
-import { sessions, agentRuns, messages } from "./sqlite-schema";
-import type { NewSession, Session } from "./sqlite-schema";
-import { eq, desc, asc, and, lt, sql, like, inArray } from "drizzle-orm";
+import { db } from "./client";
+import { sessions, agentRuns, messages } from "./schema";
+import type { NewSession, Session } from "./schema";
+import { eq, desc, asc, and, lt, sql, ilike, inArray } from "drizzle-orm";
 
 export type SessionMetadataShape = {
   characterId?: string;
@@ -11,7 +11,7 @@ export type SessionMetadataShape = {
 export interface ListSessionsPaginatedParams {
   userId: string;
   characterId?: string;
-  cursor?: string;
+  cursor?: Date | string; // Cursor could be Date now
   limit?: number;
   search?: string;
   channelType?: "whatsapp" | "telegram" | "slack";
@@ -21,7 +21,7 @@ export interface ListSessionsPaginatedParams {
 
 export interface ListSessionsPaginatedResult {
   sessions: (Session & { hasActiveRun?: boolean })[];
-  nextCursor: string | null;
+  nextCursor: Date | null;
   totalCount: number;
 }
 
@@ -42,9 +42,13 @@ export async function createSession(data: NewSession) {
   return session;
 }
 
-export async function getSession(id: string) {
+export async function getSession(id: string, userId?: string) {
+  const conditions = [eq(sessions.id, id)];
+  if (userId) {
+    conditions.push(eq(sessions.userId, userId));
+  }
   return db.query.sessions.findFirst({
-    where: eq(sessions.id, id),
+    where: and(...conditions),
   });
 }
 
@@ -102,8 +106,8 @@ export async function getSessionByMetadataKey(
       and(
         eq(sessions.userId, userId),
         eq(sessions.status, "active"),
-        sql`json_extract(${sessions.metadata}, '$.type') = ${type}`,
-        sql`json_extract(${sessions.metadata}, '$.key') = ${key}`
+        sql`${sessions.metadata}->>'type' = ${type}`,
+        sql`${sessions.metadata}->>'key' = ${key}`
       )
     )
     .orderBy(desc(sessions.updatedAt))
@@ -112,9 +116,6 @@ export async function getSessionByMetadataKey(
   return result[0] || null;
 }
 
-/**
- * List all sessions for a specific character
- */
 export async function listSessionsByCharacterId(
   userId: string,
   characterId: string,
@@ -136,15 +137,12 @@ export async function listSessionsByCharacterId(
   return result;
 }
 
-/**
- * Get session count for a character
- */
 export async function getCharacterSessionCount(
   userId: string,
   characterId: string
 ): Promise<number> {
   const result = await db
-    .select({ count: sql<number>`count(*)` })
+    .select({ count: sql<string>`count(*)` })
     .from(sessions)
     .where(
       and(
@@ -154,7 +152,7 @@ export async function getCharacterSessionCount(
       )
     );
 
-  return result[0]?.count || 0;
+  return parseInt(result[0]?.count || "0", 10);
 }
 
 export async function getOrCreateCharacterSession(
@@ -188,27 +186,28 @@ export async function listSessionsPaginated(
     baseConditions.push(eq(sessions.characterId, params.characterId));
   }
   if (params.search) {
-    baseConditions.push(like(sessions.title, `%${params.search}%`));
+    baseConditions.push(ilike(sessions.title, `%${params.search}%`));
   }
   if (params.channelType) {
     baseConditions.push(eq(sessions.channelType, params.channelType));
   }
 
   if (params.dateRange && params.dateRange !== "all") {
-    const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
+    const now = new Date();
     const threshold =
       params.dateRange === "today"
-        ? new Date(now - dayMs).toISOString()
+        ? new Date(now.getTime() - dayMs)
         : params.dateRange === "week"
-          ? new Date(now - 7 * dayMs).toISOString()
-          : new Date(now - 30 * dayMs).toISOString();
+          ? new Date(now.getTime() - 7 * dayMs)
+          : new Date(now.getTime() - 30 * dayMs);
     baseConditions.push(sql`${sessions.updatedAt} >= ${threshold}`);
   }
 
   const pageConditions = [...baseConditions];
   if (params.cursor) {
-    pageConditions.push(lt(sessions.updatedAt, params.cursor));
+    const cursorDate = typeof params.cursor === "string" ? new Date(params.cursor) : params.cursor;
+    pageConditions.push(lt(sessions.updatedAt, cursorDate));
   }
 
   const rows = await db
@@ -222,8 +221,7 @@ export async function listSessionsPaginated(
   const page = hasMore ? rows.slice(0, pageSize) : rows;
   const nextCursor = hasMore ? page[page.length - 1]?.updatedAt ?? null : null;
 
-  // Check for active runs
-  let sessionsWithStatus = page;
+  let sessionsWithStatus = page as (Session & { hasActiveRun?: boolean })[];
   if (page.length > 0) {
     const sessionIds = page.map((s) => s.id);
     const activeRuns = await db
@@ -235,29 +233,39 @@ export async function listSessionsPaginated(
     sessionsWithStatus = page.map((s) => ({
       ...s,
       hasActiveRun: activeSessionIds.has(s.id),
-    }));
+    })) as (Session & { hasActiveRun?: boolean })[];
   }
 
   const countResult = await db
-    .select({ count: sql<number>`count(*)` })
+    .select({ count: sql<string>`count(*)` })
     .from(sessions)
     .where(and(...baseConditions));
 
   return {
     sessions: sessionsWithStatus,
     nextCursor,
-    totalCount: countResult[0]?.count ?? page.length,
+    totalCount: parseInt(countResult[0]?.count ?? "0", 10),
   };
 }
 
-export async function updateSession(id: string, data: Partial<NewSession>) {
+export async function updateSession(id: string, data: Partial<NewSession>, userId?: string) {
   const metadataColumns = data.metadata !== undefined
     ? extractSessionMetadataColumns(data.metadata)
     : {};
+
+  const conditions = [eq(sessions.id, id)];
+  if (userId) {
+    conditions.push(eq(sessions.userId, userId));
+  }
+
   const [session] = await db
     .update(sessions)
-    .set({ ...data, ...metadataColumns, updatedAt: new Date().toISOString() })
-    .where(eq(sessions.id, id))
+    .set({
+      ...data,
+      ...metadataColumns,
+      updatedAt: new Date()
+    } as any)
+    .where(and(...conditions))
     .returning();
   return session;
 }

@@ -7,4 +7,4 @@
  * For the actual implementation, see: lib/db/sqlite-client.ts
  */
 
-export { db } from "./sqlite-client";
+export { db } from "./pg-client";

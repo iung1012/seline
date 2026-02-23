@@ -18,7 +18,6 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { GlobalBackButton } from "@/components/ui/global-back-button";
 import { useAuth } from "@/components/auth/auth-provider";
-import { WindowsTitleBar } from "@/components/layout/windows-titlebar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,14 +25,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { animate } from "animejs";
-import { useReducedMotion } from "@/lib/animations/hooks";
-import { ZLUTTY_EASINGS, ZLUTTY_DURATIONS } from "@/lib/animations/utils";
-import { getElectronAPI } from "@/lib/electron/types";
 import Link from "next/link";
 import { useDesktopSidebarState } from "@/hooks/use-desktop-sidebar-state";
 import { useTranslations } from "next-intl";
-import { DevLogsViewer } from "@/components/dev/dev-logs-viewer";
 import { ActiveTasksIndicator } from "@/components/schedules/active-tasks-indicator";
 import { resilientPost } from "@/lib/utils/resilient-fetch";
 
@@ -45,7 +39,7 @@ interface SidebarContextValue {
 
 const SidebarContext = createContext<SidebarContextValue>({
   isCollapsed: false,
-  toggle: () => {},
+  toggle: () => { },
 });
 
 export const useSidebarCollapsed = () => useContext(SidebarContext);
@@ -65,8 +59,6 @@ export const Shell: FC<ShellProps> = ({
   hideNav = false,
 }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isElectronApp, setIsElectronApp] = useState(false);
-  const [electronPlatform, setElectronPlatform] = useState<string | null>(null);
   const {
     isCollapsed: desktopCollapsed,
     toggle: toggleDesktopSidebar,
@@ -75,15 +67,7 @@ export const Shell: FC<ShellProps> = ({
   const { user, isLoading, signOut } = useAuth();
   const logoRef = useRef<HTMLDivElement>(null);
   const mobileLogoRef = useRef<HTMLDivElement>(null);
-  const prefersReducedMotion = useReducedMotion();
   const t = useTranslations("layout");
-
-  // Detect Electron environment on client side
-  useEffect(() => {
-    const electronAPI = getElectronAPI();
-    setIsElectronApp(!!electronAPI);
-    setElectronPlatform(electronAPI?.platform ?? null);
-  }, []);
 
   useEffect(() => {
     if (isLoading || !user) {
@@ -100,32 +84,9 @@ export const Shell: FC<ShellProps> = ({
     void bootstrapChannels();
   }, [isLoading, user?.id]);
 
-  // Ambient logo animation
-  useEffect(() => {
-    if (prefersReducedMotion) return;
-
-    const animateLogo = (ref: React.RefObject<HTMLDivElement | null>) => {
-      if (!ref.current) return null;
-      return animate(ref.current, {
-        rotateY: [-2, 2, -2],
-        duration: ZLUTTY_DURATIONS.ambientLoop * 1.5,
-        loop: true,
-        ease: ZLUTTY_EASINGS.float,
-      });
-    };
-
-    const anim1 = animateLogo(logoRef);
-    const anim2 = animateLogo(mobileLogoRef);
-
-    return () => {
-      anim1?.pause();
-      anim2?.pause();
-    };
-  }, [prefersReducedMotion]);
-
   // Determine if we have a sidebar to show
   const hasSidebar = !!sidebar;
-  const isMac = electronPlatform === "darwin";
+
   const sidebarHeaderContent = sidebarHeader ? (
     <div
       className={cn("flex items-center gap-2", desktopCollapsed && "md:hidden")}
@@ -154,18 +115,15 @@ export const Shell: FC<ShellProps> = ({
   if (hideNav) {
     return (
       <div className="flex h-dvh flex-col overflow-hidden bg-terminal-cream">
-        <WindowsTitleBar />
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-terminal-cream">
           {children}
         </main>
-        <DevLogsViewer />
       </div>
     );
   }
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-terminal-cream">
-      <WindowsTitleBar />
       {/* Mobile overlay - only when sidebar exists */}
       {hasSidebar && sidebarOpen && (
         <div
@@ -185,11 +143,10 @@ export const Shell: FC<ShellProps> = ({
               isHydrated && desktopCollapsed ? "md:w-16" : "w-72",
             )}
           >
-            {/* Header with logo - add top padding for macOS traffic light buttons in Electron */}
+            {/* Header with logo */}
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center",
-                isMac && "mt-8", // Add top margin for macOS traffic light buttons
                 desktopCollapsed
                   ? "md:px-2 md:justify-center px-4 justify-between"
                   : "px-4 justify-between",
@@ -342,8 +299,6 @@ export const Shell: FC<ShellProps> = ({
             className={cn(
               "flex h-14 shrink-0 items-center bg-terminal-cream/90 backdrop-blur-sm px-4 shadow-sm md:h-16 md:px-6",
               hasSidebar ? "md:hidden" : "",
-              isElectronApp && "webkit-app-region-drag",
-              isMac && "mt-8",
             )}
           >
             <div className="flex w-full items-center justify-between">
@@ -351,7 +306,6 @@ export const Shell: FC<ShellProps> = ({
               <div
                 className={cn(
                   "flex items-center gap-2 min-w-[80px]",
-                  isElectronApp && "webkit-app-region-no-drag",
                 )}
               >
                 {hasSidebar && (
@@ -364,7 +318,7 @@ export const Shell: FC<ShellProps> = ({
                     <MenuIcon className="size-5" />
                   </Button>
                 )}
-                <GlobalBackButton isElectron={isElectronApp} />
+                <GlobalBackButton isElectron={false} />
               </div>
 
               {/* Center zone: Logo */}
@@ -372,7 +326,6 @@ export const Shell: FC<ShellProps> = ({
                 <Link
                   href="/"
                   aria-label={t("homeAria")}
-                  className={cn(isElectronApp && "webkit-app-region-no-drag")}
                 >
                   <div
                     ref={mobileLogoRef}
@@ -395,7 +348,6 @@ export const Shell: FC<ShellProps> = ({
               <div
                 className={cn(
                   "flex items-center justify-end gap-2 min-w-[80px]",
-                  isElectronApp && "webkit-app-region-no-drag",
                 )}
               >
                 {/* Active Tasks Indicator */}
@@ -490,9 +442,6 @@ export const Shell: FC<ShellProps> = ({
           </main>
         </div>
       </div>
-
-      {/* Dev Logs Viewer - only shows in Electron */}
-      <DevLogsViewer />
     </div>
   );
 };

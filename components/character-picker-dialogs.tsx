@@ -17,7 +17,6 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AnimatedButton } from "@/components/ui/animated-button";
 import { ToolDependencyBadge } from "@/components/ui/tool-dependency-badge";
-import { FolderSyncManager } from "@/components/vector-search/folder-sync-manager";
 import { MCPToolsPage } from "@/components/character-creation/terminal-pages/mcp-tools-page";
 import { useTranslations } from "next-intl";
 import type { CharacterSummary } from "@/components/character-picker-types";
@@ -522,7 +521,9 @@ export function FolderManagerDialog({
           </DialogDescription>
         </DialogHeader>
         {folderManagerCharacter && (
-          <FolderSyncManager characterId={folderManagerCharacter.id} />
+          <div className="p-4 text-center font-mono text-sm text-terminal-muted">
+            {t("syncedFoldersDisabled")}
+          </div>
         )}
         <div className="flex justify-end mt-4">
           <AnimatedButton

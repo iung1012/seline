@@ -1,5 +1,5 @@
-import { db } from "./sqlite-client";
-import { users } from "./sqlite-schema";
+import { db } from "./client";
+import { users } from "./schema";
 import { eq } from "drizzle-orm";
 
 export async function getOrCreateUserByExternalId(externalId: string, email?: string | null) {
@@ -11,7 +11,7 @@ export async function getOrCreateUserByExternalId(externalId: string, email?: st
     return existingUser;
   }
 
-  // Email is required - use provided email or generate placeholder from externalId
+  // Email is required
   const userEmail = email || `${externalId}@local.styly`;
 
   const [newUser] = await db

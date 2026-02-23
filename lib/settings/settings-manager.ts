@@ -1,12 +1,15 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
 import { loadConfigFromEnv } from "@/lib/config/vector-search";
 import type { MCPConfig } from "@/lib/mcp/types";
 import {
-  isModelCompatibleWithProvider,
-  validateAllModelsForProvider,
-  type BatchValidationResult,
+    isModelCompatibleWithProvider,
+    validateAllModelsForProvider,
+    type BatchValidationResult,
 } from "@/lib/ai/model-validation";
+import { getUserSettings, upsertUserSettings, getDecryptedConfig } from "@/lib/db/queries-user-settings";
+import { decryptJSON } from "@/lib/auth/encryption";
+import { db } from "@/lib/db/client";
+import { users } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 
 export type PostEditHooksPreset = "off" | "fast" | "strict";
 
@@ -22,7 +25,7 @@ export interface AppSettings {
     firecrawlApiKey?: string; // For web scraping with Firecrawl
     webScraperProvider?: "firecrawl" | "local"; // Web scraping provider selection
     webSearchProvider?: "tavily" | "duckduckgo" | "auto"; // Web search provider (default: auto)
-  huggingFaceToken?: string; // For downloading gated models from Hugging Face
+    huggingFaceToken?: string; // For downloading gated models from Hugging Face
 
     // MCP (Model Context Protocol) settings
     /**
@@ -233,10 +236,10 @@ export interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
     llmProvider: "anthropic",
     ollamaBaseUrl: "http://localhost:11434/v1",
-    localUserId: crypto.randomUUID(),
-    localUserEmail: "local@zlutty.ai",
+    localUserId: "00000000-0000-0000-0000-000000000000",
+    localUserEmail: "user@seline.ai",
     theme: "dark",
-    toolLoadingMode: "always",  // Default to always-load for better onboarding UX
+    toolLoadingMode: "always",
     postEditHooksPreset: "off",
     postEditHooksEnabled: false,
     postEditTypecheckEnabled: false,
@@ -261,12 +264,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     vectorSearchTokenChunkStride: 48,
     vectorSearchMaxFileLines: 3000,
     vectorSearchMaxLineLength: 1000,
-    // Local Grep defaults
     localGrepEnabled: true,
     localGrepMaxResults: 20,
     localGrepContextLines: 2,
     localGrepRespectGitignore: true,
-    // ComfyUI defaults (Z-Image)
     imageGenerationProvider: "openrouter",
     comfyuiEnabled: false,
     comfyuiInstalled: false,
@@ -279,49 +280,34 @@ const DEFAULT_SETTINGS: AppSettings = {
     comfyuiCustomUseHttps: false,
     comfyuiCustomAutoDetect: true,
     comfyuiCustomBaseUrl: "",
-    // FLUX.2 Klein 4B defaults
     flux2Klein4bEnabled: false,
     flux2Klein4bInstalled: false,
     flux2Klein4bAutoStart: false,
     flux2Klein4bModelsDownloaded: false,
     flux2Klein4bBackendPath: "",
-    // FLUX.2 Klein 9B defaults
     flux2Klein9bEnabled: false,
     flux2Klein9bInstalled: false,
     flux2Klein9bAutoStart: false,
     flux2Klein9bModelsDownloaded: false,
     flux2Klein9bBackendPath: "",
-    // TTS defaults
     ttsEnabled: false,
     ttsProvider: "edge",
     ttsAutoMode: "off",
     ttsSummarizeThreshold: 1500,
     openaiTtsVoice: "alloy",
     openaiTtsModel: "gpt-4o-mini-tts",
-    // STT defaults
     sttEnabled: true,
     sttProvider: "openai",
     sttLocalModel: "ggml-tiny.en",
-    // RTK defaults
     rtkEnabled: false,
     rtkInstalled: false,
     rtkVerbosity: 0,
     rtkUltraCompact: false,
-    // Developer Workspace defaults
     devWorkspaceEnabled: false,
     devWorkspaceAutoCleanup: true,
     devWorkspaceAutoCleanupDays: 7,
     workspaceOnboardingSeen: false,
 };
-
-function getSettingsPath(): string {
-    // In Electron, LOCAL_DATA_PATH is set to userDataPath/data
-    if (process.env.LOCAL_DATA_PATH) {
-        return join(process.env.LOCAL_DATA_PATH, "settings.json");
-    }
-    const dataDir = join(process.cwd(), ".local-data");
-    return join(dataDir, "settings.json");
-}
 
 // ---------------------------------------------------------------------------
 // Model-provider validation (delegates to shared model-validation.ts)
@@ -335,17 +321,17 @@ function getSettingsPath(): string {
  * Returns the validation result so callers can surface errors to the user.
  */
 export function validateSettingsModels(
-  settings: Pick<AppSettings, "llmProvider" | "chatModel" | "researchModel" | "visionModel" | "utilityModel">,
+    settings: Pick<AppSettings, "llmProvider" | "chatModel" | "researchModel" | "visionModel" | "utilityModel">,
 ): BatchValidationResult {
-  return validateAllModelsForProvider(
-    {
-      chatModel: settings.chatModel,
-      researchModel: settings.researchModel,
-      visionModel: settings.visionModel,
-      utilityModel: settings.utilityModel,
-    },
-    settings.llmProvider,
-  );
+    return validateAllModelsForProvider(
+        {
+            chatModel: settings.chatModel,
+            researchModel: settings.researchModel,
+            visionModel: settings.visionModel,
+            utilityModel: settings.utilityModel,
+        },
+        settings.llmProvider,
+    );
 }
 
 let cachedSettings: AppSettings | null = null;
@@ -354,87 +340,80 @@ let cachedSettingsTimestamp: number = 0;
 const SETTINGS_CACHE_TTL_MS = 1000;
 
 /**
- * Load settings from disk.
- * Uses a short-lived cache (1 second) to balance performance with responsiveness to changes.
- * The cache is automatically invalidated when saveSettings() is called.
+ * Load settings from database for a specific user.
  */
-export function loadSettings(): AppSettings {
-    const now = Date.now();
-    const cacheValid = cachedSettings !== null && (now - cachedSettingsTimestamp) < SETTINGS_CACHE_TTL_MS;
-
-    if (cacheValid && cachedSettings) {
-        // Always update env vars even when returning cached settings
-        // This ensures API keys are available in process.env across all modules
-        updateEnvFromSettings(cachedSettings);
-        return cachedSettings;
+export async function loadSettings(userId?: string): Promise<AppSettings> {
+    if (!userId) {
+        // Fallback or early return for system level settings if any
+        return { ...DEFAULT_SETTINGS };
     }
 
-    const settingsPath = getSettingsPath();
+    try {
+        const row = await getUserSettings(userId);
+        const decryptedConfig = await getDecryptedConfig(userId);
 
-    if (existsSync(settingsPath)) {
-        try {
-            const data = readFileSync(settingsPath, "utf-8");
-            const loaded: AppSettings = { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
-            // NOTE: We no longer clear incompatible models on read.
-            // Validation happens at write-time (settings PUT, session model-config PUT)
-            // via model-validation.ts. The runtime guard in providers.ts handles any
-            // remaining edge cases by falling back to provider defaults.
-            cachedSettings = loaded;
-            cachedSettingsTimestamp = now;
-            // Update environment variables so providers pick up the configured API keys
-            updateEnvFromSettings(loaded);
-            return loaded;
-        } catch (error) {
-            console.error("[Settings] Error loading settings:", error);
-        }
+        const loaded: AppSettings = {
+            ...DEFAULT_SETTINGS,
+            ...(row?.preferences as any || {}),
+            ...decryptedConfig,
+            localUserId: userId,
+        };
+
+        return loaded;
+    } catch (error) {
+        console.error("[Settings] Error loading settings from DB:", error);
+        return { ...DEFAULT_SETTINGS };
     }
-
-    // Return defaults and save them
-    const defaults: AppSettings = { ...DEFAULT_SETTINGS };
-    cachedSettings = defaults;
-    cachedSettingsTimestamp = now;
-    saveSettings(defaults);
-    return defaults;
 }
 
 /**
- * Save settings to disk
+ * Save settings to database for a specific user.
  */
-export function saveSettings(settings: AppSettings): void {
-    const settingsPath = getSettingsPath();
+export async function saveSettings(settings: AppSettings, userId: string): Promise<void> {
+    const sensitiveKeys = [
+        "anthropicApiKey", "openrouterApiKey", "kimiApiKey", "openaiApiKey",
+        "tavilyApiKey", "firecrawlApiKey", "huggingFaceToken", "stylyAiApiKey",
+        "elevenLabsApiKey"
+    ];
 
-    // Ensure directory exists
-    const dir = dirname(settingsPath);
-    if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+    const encryptedConfig: Record<string, any> = {};
+    const preferences: Record<string, any> = { ...settings };
+
+    for (const key of sensitiveKeys) {
+        if (key in settings) {
+            encryptedConfig[key] = (settings as any)[key];
+            delete preferences[key];
+        }
     }
 
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    cachedSettings = settings;
-    cachedSettingsTimestamp = Date.now();
+    // Also remove IDs that shouldn't be in preferences
+    delete preferences.localUserId;
 
-    // Update environment variables for immediate use
-    updateEnvFromSettings(settings);
+    await upsertUserSettings(userId, {
+        encryptedConfig,
+        preferences,
+    });
 }
 
 /**
  * Update a single setting
  */
-export function updateSetting<K extends keyof AppSettings>(
+export async function updateSetting<K extends keyof AppSettings>(
+    userId: string,
     key: K,
     value: AppSettings[K]
-): AppSettings {
-    const settings = loadSettings();
+): Promise<AppSettings> {
+    const settings = await loadSettings(userId);
     settings[key] = value;
-    saveSettings(settings);
+    await saveSettings(settings, userId);
     return settings;
 }
 
 /**
  * Get a single setting value
  */
-export function getSetting<K extends keyof AppSettings>(key: K): AppSettings[K] {
-    const settings = loadSettings();
+export async function getSetting<K extends keyof AppSettings>(userId: string, key: K): Promise<AppSettings[K]> {
+    const settings = await loadSettings(userId);
     return settings[key];
 }
 
@@ -596,10 +575,11 @@ function updateEnvFromSettings(settings: AppSettings): void {
 }
 
 /**
- * Check if required API keys are configured
+ * Check if required API keys are configured (Async for SaaS)
  */
-export function hasRequiredApiKeys(): boolean {
-    const settings = loadSettings();
+export async function hasRequiredApiKeys(userId: string): Promise<boolean> {
+    const settings = await loadSettings(userId);
+    // ... rest of logic
 
     // Need at least one LLM provider key
     if (settings.llmProvider === "anthropic" && !settings.anthropicApiKey) {
@@ -635,27 +615,16 @@ export function hasRequiredApiKeys(): boolean {
 /**
  * Reset settings to defaults
  */
-export function resetSettings(): AppSettings {
-    cachedSettings = null;
-    const settings = { ...DEFAULT_SETTINGS, localUserId: crypto.randomUUID() };
-    saveSettings(settings);
+export async function resetSettings(userId: string): Promise<AppSettings> {
+    const settings = { ...DEFAULT_SETTINGS, localUserId: userId };
+    await saveSettings(settings, userId);
     return settings;
 }
 
 /**
- * Invalidate the settings cache to force a fresh read from disk.
- * Call this when settings may have been modified by another process or request.
- */
-export function invalidateSettingsCache(): void {
-    cachedSettings = null;
-    cachedSettingsTimestamp = 0;
-}
-
-/**
  * Initialize settings on app startup
+ * (Legacy, may need to be called per-request in SaaS)
  */
 export function initializeSettings(): void {
-    const settings = loadSettings();
-    updateEnvFromSettings(settings);
-    console.log("[Settings] Initialized with provider:", settings.llmProvider);
+    console.log("[Settings] SaaS initialization mode active");
 }

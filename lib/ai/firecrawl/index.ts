@@ -10,7 +10,6 @@ import { tool, jsonSchema } from "ai";
 import { withToolLogging } from "@/lib/ai/tool-registry/logging";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { getWebScraperProvider } from "@/lib/ai/web-scraper/provider";
-import { localScrapePage, localCrawlSite } from "@/lib/ai/web-scraper/local";
 
 // ============================================================================
 // Firecrawl API Configuration
@@ -121,13 +120,7 @@ async function executeFirecrawlScrape(
     let imageSources: string[] = [];
 
     if (provider === "local") {
-      const localResult = await localScrapePage(url, { onlyMainContent, waitFor });
-      markdown = localResult.markdown;
-      title = localResult.title || url;
-      description = localResult.description;
-      ogImage = localResult.ogImage;
-      links = localResult.links;
-      imageSources = localResult.images;
+      throw new Error("Local web scraper is no longer supported on Seline Web SaaS.");
     } else {
       const apiKey = getFirecrawlApiKey();
 
@@ -297,13 +290,7 @@ async function executeFirecrawlCrawl(args: FirecrawlCrawlArgs): Promise<Firecraw
   try {
     const provider = getWebScraperProvider();
     if (provider === "local") {
-      const result = await localCrawlSite({ url, maxPages, includePaths, excludePaths });
-      return {
-        status: "success",
-        url,
-        totalPages: result.totalPages,
-        pages: result.pages,
-      };
+      throw new Error("Local web crawl is no longer supported on Seline Web SaaS.");
     }
 
     const apiKey = getFirecrawlApiKey();

@@ -1,31 +1,47 @@
-import type Database from "better-sqlite3";
+import { db } from "./client";
+import { sessions } from "./schema";
+import { and, eq, lt, sql, isNull, or } from "drizzle-orm";
 
-export function runSessionMaintenance(sqlite: Database.Database): void {
+export async function runSessionMaintenance(): Promise<void> {
   try {
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
 
-    const deletedResult = sqlite.prepare(`
-      DELETE FROM sessions
-      WHERE status = 'deleted'
-        AND updated_at < ?
-    `).run(thirtyDaysAgo);
-    if (deletedResult.changes > 0) {
-      console.log(`[SQLite Maintenance] Purged ${deletedResult.changes} deleted session(s) older than 30 days`);
+    // Purge deleted sessions
+    const deletedResult = await db
+      .delete(sessions)
+      .where(
+        and(
+          eq(sessions.status, 'deleted'),
+          lt(sessions.updatedAt, thirtyDaysAgo)
+        )
+      )
+      .returning({ id: sessions.id });
+
+    if (deletedResult.length > 0) {
+      console.log(`[Postgres Maintenance] Purged ${deletedResult.length} deleted session(s) older than 30 days`);
     }
 
-    const archivedResult = sqlite.prepare(`
-      UPDATE sessions
-      SET status = 'archived', updated_at = datetime('now')
-      WHERE status = 'active'
-        AND COALESCE(message_count, 0) = 0
-        AND updated_at < ?
-    `).run(ninetyDaysAgo);
-    if (archivedResult.changes > 0) {
-      console.log(`[SQLite Maintenance] Archived ${archivedResult.changes} empty inactive session(s)`);
+    // Archive empty inactive sessions
+    const archivedResult = await db
+      .update(sessions)
+      .set({
+        status: 'archived',
+        updatedAt: new Date()
+      })
+      .where(
+        and(
+          eq(sessions.status, 'active'),
+          or(isNull(sessions.messageCount), eq(sessions.messageCount, 0)),
+          lt(sessions.updatedAt, ninetyDaysAgo)
+        )
+      )
+      .returning({ id: sessions.id });
+
+    if (archivedResult.length > 0) {
+      console.log(`[Postgres Maintenance] Archived ${archivedResult.length} empty inactive session(s)`);
     }
   } catch (error) {
-    console.warn("[SQLite Maintenance] Session maintenance failed:", error);
+    console.warn("[Postgres Maintenance] Session maintenance failed:", error);
   }
 }
-

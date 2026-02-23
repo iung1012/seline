@@ -1,28 +1,14 @@
 /**
- * Kimi (Moonshot) Client
- *
- * Lazy-initialized OpenAI-compatible client for the Moonshot Kimi API.
- * Includes a custom fetch wrapper that disables thinking mode and sets the
- * required fixed parameter values for non-thinking mode per Kimi K2.5 docs.
+ * Kimi (Moonshot) Client (Multi-tenant)
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { KIMI_CONFIG } from "@/lib/auth/kimi-models";
+import { loadSettings } from "@/lib/settings/settings-manager";
 import { getAppUrl } from "./openrouter-client";
 
-// ---- Configuration -----------------------------------------------------------
+const _kimiClients = new Map<string, ReturnType<typeof createOpenAICompatible>>();
 
-export function getKimiApiKey(): string | undefined {
-  return process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY;
-}
-
-// ---- Custom fetch ------------------------------------------------------------
-
-/**
- * Custom fetch wrapper for Kimi API.
- * Disables thinking mode and enforces required parameter values
- * per Kimi K2.5 docs (non-thinking mode requires specific fixed values).
- */
 async function kimiCustomFetch(
   url: RequestInfo | URL,
   init?: RequestInit
@@ -30,53 +16,41 @@ async function kimiCustomFetch(
   if (init?.body && typeof init.body === "string") {
     try {
       const body = JSON.parse(init.body);
-      // Disable thinking mode — reasoning outputs should not persist in history
       body.thinking = { type: "disabled" };
-      // Non-thinking mode requires these fixed values per Kimi K2.5 docs
       body.temperature = 0.6;
       body.top_p = 0.95;
       body.n = 1;
       body.presence_penalty = 0.0;
       body.frequency_penalty = 0.0;
       init = { ...init, body: JSON.stringify(body) };
-    } catch {
-      // Not JSON, pass through unchanged
-    }
+    } catch { }
   }
   return globalThis.fetch(url, init);
 }
 
-// ---- Lazy singleton ----------------------------------------------------------
-
-let _kimiClient: ReturnType<typeof createOpenAICompatible> | null = null;
-let _kimiClientApiKey: string | undefined = undefined;
-
-export function getKimiClient(): ReturnType<typeof createOpenAICompatible> {
-  const apiKey = getKimiApiKey();
-
-  // Recreate client if API key changed
-  if (_kimiClient && _kimiClientApiKey !== apiKey) {
-    _kimiClient = null;
+export async function getKimiClient(userId: string): Promise<ReturnType<typeof createOpenAICompatible>> {
+  if (_kimiClients.has(userId)) {
+    return _kimiClients.get(userId)!;
   }
 
-  if (!_kimiClient) {
-    _kimiClientApiKey = apiKey;
-    _kimiClient = createOpenAICompatible({
-      name: "kimi",
-      baseURL: KIMI_CONFIG.BASE_URL,
-      apiKey: apiKey || "",
-      headers: {
-        "HTTP-Referer": getAppUrl(),
-        "X-Title": "Seline Agent",
-      },
-      fetch: kimiCustomFetch,
-    });
-  }
+  const settings = await loadSettings(userId);
+  const apiKey = settings.kimiApiKey || process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || "";
 
-  return _kimiClient;
+  const client = createOpenAICompatible({
+    name: "kimi",
+    baseURL: KIMI_CONFIG.BASE_URL,
+    apiKey,
+    headers: {
+      "HTTP-Referer": getAppUrl(),
+      "X-Title": "Seline Agent",
+    },
+    fetch: kimiCustomFetch,
+  });
+
+  _kimiClients.set(userId, client);
+  return client;
 }
 
-export function invalidateKimiClient(): void {
-  _kimiClient = null;
-  _kimiClientApiKey = undefined;
+export function invalidateKimiClient(userId: string): void {
+  _kimiClients.delete(userId);
 }

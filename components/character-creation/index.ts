@@ -10,7 +10,6 @@ export {
   IdentityPage,
   CapabilitiesPage,
   KnowledgeBasePage,
-  VectorSearchPage,
   LoadingPage,
   PreviewPage,
   SuccessPage,

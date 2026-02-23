@@ -1,7 +1,7 @@
-import { db } from "./sqlite-client";
-import { sessions, messages, toolRuns } from "./sqlite-schema";
-import type { NewMessage, NewToolRun } from "./sqlite-schema";
-import { eq, desc, asc, and, sql, or, inArray } from "drizzle-orm";
+import { db } from "./client";
+import { sessions, messages, toolRuns } from "./schema";
+import type { NewMessage, NewToolRun } from "./schema";
+import { eq, asc, and, sql, or, inArray } from "drizzle-orm";
 
 // Messages
 export async function createMessage(data: NewMessage) {
@@ -13,12 +13,13 @@ export async function createMessage(data: NewMessage) {
 
     if (message) {
       const tokenCount = typeof message.tokenCount === "number" ? message.tokenCount : 0;
-      const nowIso = new Date().toISOString();
+      // In PostgreSQL, updatedAt and lastMessageAt are updated via code or DB default
+      // If code provides it, it must be a Date
       await db
         .update(sessions)
         .set({
-          updatedAt: nowIso,
-          lastMessageAt: nowIso,
+          updatedAt: new Date(),
+          lastMessageAt: new Date(),
           messageCount: sql`${sessions.messageCount} + 1`,
           totalTokenCount: sql`${sessions.totalTokenCount} + ${tokenCount}`,
         })
@@ -27,22 +28,26 @@ export async function createMessage(data: NewMessage) {
 
     return message;
   } catch (error) {
-    // Handle unique constraint violation (message already exists)
-    if ((error as Error).message?.includes('UNIQUE constraint failed')) {
+    if ((error as Error).message?.includes('unique constraint')) {
       return undefined;
     }
     throw error;
   }
 }
 
-export async function getMessages(sessionId: string) {
+export async function getMessages(sessionId: string, userId?: string) {
+  if (userId) {
+    const session = await db.query.sessions.findFirst({
+      where: and(eq(sessions.id, sessionId), eq(sessions.userId, userId)),
+    });
+    if (!session) throw new Error("Unauthorized or session not found");
+  }
+
   return db.query.messages.findMany({
     where: eq(messages.sessionId, sessionId),
     orderBy: [
-      // Push NULL orderingIndex values to the end for backward compatibility
       asc(sql`case when ${messages.orderingIndex} is null then 1 else 0 end`),
       asc(messages.orderingIndex),
-      // Fallback to creation time for legacy/NULL rows
       asc(messages.createdAt),
     ],
   });
@@ -68,7 +73,7 @@ export async function updateMessage(
     await db
       .update(sessions)
       .set({
-        updatedAt: new Date().toISOString(),
+        updatedAt: new Date(),
         totalTokenCount: sql`${sessions.totalTokenCount} + ${delta}`,
       })
       .where(eq(sessions.id, updated.sessionId));
@@ -77,18 +82,9 @@ export async function updateMessage(
   return updated;
 }
 
-/**
- * Get all tool results for a session, indexed by toolCallId.
- * This fetches results from both:
- * 1. role="tool" messages (separate tool result messages)
- * 2. role="assistant" messages with inline tool-result parts
- *
- * Used by the hybrid message approach to enhance frontend messages with DB tool results.
- */
 export async function getToolResultsForSession(sessionId: string): Promise<Map<string, unknown>> {
   const toolResults = new Map<string, unknown>();
 
-  // Fetch all messages that might contain tool results
   const allMessages = await db.query.messages.findMany({
     where: and(
       eq(messages.sessionId, sessionId),
@@ -105,13 +101,11 @@ export async function getToolResultsForSession(sessionId: string): Promise<Map<s
     if (!Array.isArray(content)) continue;
 
     for (const part of content) {
-      // Handle tool-result parts (from both tool and assistant messages)
       if (part.type === "tool-result" && part.toolCallId) {
         toolResults.set(part.toolCallId, part.result);
       }
     }
 
-    // Also check message-level toolCallId (alternative storage pattern)
     if (msg.role === "tool" && msg.toolCallId && content.length > 0) {
       const firstPart = content[0] as { result?: unknown };
       if (firstPart.result !== undefined) {
@@ -130,10 +124,8 @@ export async function getNonCompactedMessages(sessionId: string) {
       eq(messages.isCompacted, false)
     ),
     orderBy: [
-      // Push NULL orderingIndex values to the end for backward compatibility
       asc(sql`case when ${messages.orderingIndex} is null then 1 else 0 end`),
       asc(messages.orderingIndex),
-      // Fallback to creation time for legacy/NULL rows
       asc(messages.createdAt),
     ],
   });
@@ -147,22 +139,23 @@ export async function markMessagesAsCompacted(
   const targetIndex = sessionMessages.findIndex((message) => message.id === beforeMessageId);
   if (targetIndex < 0) return;
 
-  // Keep backward compatibility: compact up to and including the boundary message.
   const idsToCompact = sessionMessages.slice(0, targetIndex + 1).map((message) => message.id);
   await markMessagesAsCompactedByIds(sessionId, idsToCompact);
 }
 
-/**
- * Mark specific messages as compacted by their IDs.
- * Used by auto-prune strategies to compact individual messages.
- *
- * @returns The number of messages actually marked as compacted.
- */
 export async function markMessagesAsCompactedByIds(
   sessionId: string,
-  messageIds: string[]
+  messageIds: string[],
+  userId?: string
 ): Promise<number> {
   if (messageIds.length === 0) return 0;
+
+  if (userId) {
+    const session = await db.query.sessions.findFirst({
+      where: and(eq(sessions.id, sessionId), eq(sessions.userId, userId)),
+    });
+    if (!session) throw new Error("Unauthorized or session not found");
+  }
 
   const result = await db
     .update(messages)
@@ -172,10 +165,10 @@ export async function markMessagesAsCompactedByIds(
         eq(messages.sessionId, sessionId),
         inArray(messages.id, messageIds)
       )
-    );
+    )
+    .returning();
 
-  // Drizzle returns { changes } for SQLite updates
-  return (result as unknown as { changes?: number })?.changes ?? messageIds.length;
+  return result.length;
 }
 
 // Tool Runs

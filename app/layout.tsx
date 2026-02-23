@@ -6,7 +6,6 @@ import { NextIntlClientProvider } from "next-intl";
 import { getMessages, getLocale } from "next-intl/server";
 import "./globals.css";
 import { AuthProvider } from "@/components/auth/auth-provider";
-import { GlobalSyncWrapper } from "@/components/vector-search";
 import { ThemeProvider } from "@/components/theme/theme-provider";
 import { TaskNotificationProvider } from "@/components/schedules/task-notification-provider";
 import { loadSettings } from "@/lib/settings/settings-manager";
@@ -43,7 +42,13 @@ export default async function RootLayout({
 }>) {
   const locale = await getLocale();
   const messages = await getMessages();
-  const settings = loadSettings();
+
+  // Try to get userId from session cookie for initial settings/theme loading
+  const { cookies } = await import("next/headers");
+  const cookieStore = await cookies();
+  const sessionId = cookieStore.get("seline-session")?.value;
+
+  const settings = await loadSettings(sessionId);
   const initialTheme = settings.theme ?? "system";
   const themeScript = `
 (() => {
@@ -74,13 +79,11 @@ export default async function RootLayout({
         </Script>
         <ThemeProvider initialTheme={initialTheme}>
           <NextIntlClientProvider locale={locale} messages={messages}>
-            <GlobalSyncWrapper>
-              <AuthProvider>
-                <TaskNotificationProvider>
-                  {children}
-                </TaskNotificationProvider>
-              </AuthProvider>
-            </GlobalSyncWrapper>
+            <AuthProvider>
+              <TaskNotificationProvider>
+                {children}
+              </TaskNotificationProvider>
+            </AuthProvider>
             <Toaster
               position="bottom-right"
               toastOptions={{

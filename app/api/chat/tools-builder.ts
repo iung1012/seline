@@ -21,19 +21,10 @@ import {
   createRetrieveFullContentTool,
 } from "@/lib/ai/tools";
 import { createWebSearchTool } from "@/lib/ai/web-search";
-import { createVectorSearchToolV2 } from "@/lib/ai/vector-search";
-import { createReadFileTool } from "@/lib/ai/tools/read-file-tool";
-import { createLocalGrepTool } from "@/lib/ai/ripgrep";
-import { createExecuteCommandTool } from "@/lib/ai/tools/execute-command-tool";
-import { createEditFileTool } from "@/lib/ai/tools/edit-file-tool";
-import { createWriteFileTool } from "@/lib/ai/tools/write-file-tool";
-import { createPatchFileTool } from "@/lib/ai/tools/patch-file-tool";
-import { createUpdatePlanTool } from "@/lib/ai/tools/update-plan-tool";
 import { createSendMessageToChannelTool } from "@/lib/ai/tools/channel-tools";
 import { createRunSkillTool } from "@/lib/ai/tools/run-skill-tool";
 import { createUpdateSkillTool } from "@/lib/ai/tools/update-skill-tool";
 import { createCompactSessionTool } from "@/lib/ai/tools/compact-session-tool";
-import { createWorkspaceTool } from "@/lib/ai/tools/workspace-tool";
 import {
   ToolRegistry,
   createToolSearchTool,
@@ -176,60 +167,12 @@ export async function buildToolsForRequest(
         characterId: characterId || null,
       }),
     }),
-    ...(allTools.vectorSearch && {
-      vectorSearch: createVectorSearchToolV2({
-        sessionId,
-        userId,
-        characterId: characterId || null,
-        sessionMetadata,
-      }),
-    }),
-    ...(allTools.readFile && {
-      readFile: createReadFileTool({
-        sessionId,
-        userId,
-        characterId: characterId || null,
-      }),
-    }),
-    ...(allTools.localGrep && {
-      localGrep: createLocalGrepTool({
-        sessionId,
-        characterId: characterId || null,
-      }),
-    }),
     ...(allTools.webSearch && {
       webSearch: createWebSearchTool({
         sessionId,
         userId,
         characterId: characterId || null,
       }),
-    }),
-    ...(allTools.executeCommand && {
-      executeCommand: createExecuteCommandTool({
-        sessionId,
-        characterId: characterId || null,
-      }),
-    }),
-    ...(allTools.editFile && {
-      editFile: createEditFileTool({
-        sessionId,
-        characterId: characterId || null,
-      }),
-    }),
-    ...(allTools.writeFile && {
-      writeFile: createWriteFileTool({
-        sessionId,
-        characterId: characterId || null,
-      }),
-    }),
-    ...(allTools.patchFile && {
-      patchFile: createPatchFileTool({
-        sessionId,
-        characterId: characterId || null,
-      }),
-    }),
-    ...(allTools.updatePlan && {
-      updatePlan: createUpdatePlanTool({ sessionId }),
     }),
     ...(allTools.runSkill && {
       runSkill: createRunSkillTool({
@@ -247,14 +190,6 @@ export async function buildToolsForRequest(
     ...(allTools.compactSession && {
       compactSession: createCompactSessionTool({ sessionId }),
     }),
-    ...(allTools.workspace &&
-      devWorkspaceEnabled && {
-        workspace: createWorkspaceTool({
-          sessionId,
-          characterId: characterId || "",
-          userId,
-        }),
-      }),
   };
 
   // Load MCP tools for this character (if configured).
@@ -478,8 +413,8 @@ export async function buildToolsForRequest(
           if (guardedResult.blocked) {
             console.warn(
               `[CHAT API] Tool result validated as oversized: ${toolId} ` +
-                `(~${guardedResult.estimatedTokens.toLocaleString()} tokens, ` +
-                `budget=${streamToolResultBudgetTokens.toLocaleString()})`
+              `(~${guardedResult.estimatedTokens.toLocaleString()} tokens, ` +
+              `budget=${streamToolResultBudgetTokens.toLocaleString()})`
             );
           }
 
@@ -557,20 +492,20 @@ export async function buildToolsForRequest(
   allToolsWithMCP = wrappedTools;
   console.log(
     `[CHAT API] Wrapped ${Object.keys(wrappedTools).length} tools with stream guard ` +
-      `(budget=${streamToolResultBudgetTokens.toLocaleString()} tokens, ` +
-      `pre:${hasPreHooks}, post:${hasPostHooks}, failure:${hasFailureHooks})`
+    `(budget=${streamToolResultBudgetTokens.toLocaleString()} tokens, ` +
+    `pre:${hasPreHooks}, post:${hasPostHooks}, failure:${hasFailureHooks})`
   );
 
   // Build the initial activeTools array.
   const initialActiveToolNames = useDeferredLoading
     ? [
-        ...new Set([
-          ...initialActiveTools,
-          ...previouslyDiscoveredTools,
-          ...mcpToolResult.alwaysLoadToolIds,
-          ...customComfyUIToolResult.alwaysLoadToolIds,
-        ]),
-      ]
+      ...new Set([
+        ...initialActiveTools,
+        ...previouslyDiscoveredTools,
+        ...mcpToolResult.alwaysLoadToolIds,
+        ...customComfyUIToolResult.alwaysLoadToolIds,
+      ]),
+    ]
     : Object.keys(allToolsWithMCP);
 
   console.log(

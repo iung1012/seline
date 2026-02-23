@@ -12,7 +12,6 @@ import { enablePluginForAgent, installPlugin } from "@/lib/plugins/registry";
 import { buildAgentMetadataSeed } from "@/lib/plugins/import-parser";
 import {
   createWorkflowFromPluginImport,
-  syncSharedFoldersToSubAgents,
 } from "@/lib/agents/workflows";
 import type { InstalledPlugin, PluginAgentEntry, PluginParseResult, PluginScope } from "@/lib/plugins/types";
 import { mkdir, copyFile } from "fs/promises";
@@ -258,36 +257,11 @@ async function linkPluginAuxiliaryFilesToWorkspace(
     })
   );
 
-  // Register as a sync folder for this agent if not already covered
-  const { getSyncFolders, addSyncFolder } = await import("@/lib/vectordb/sync-service");
-  const existingFolders = await getSyncFolders(characterId);
-
-  const resolvedPluginDir = path.resolve(pluginWorkspaceDir);
-
-  // Check exact match OR parent directory already watched
-  const alreadyLinked = existingFolders.some(
-    (f) => path.resolve(f.folderPath) === resolvedPluginDir,
-  );
-  const coveredByParent = existingFolders.some(
-    (f) => resolvedPluginDir.startsWith(path.resolve(f.folderPath) + path.sep),
-  );
-
-  if (!alreadyLinked && !coveredByParent) {
-    await addSyncFolder({
-      userId,
-      characterId,
-      folderPath: pluginWorkspaceDir,
-      displayName: `${plugin.name} plugin files`,
-      recursive: true,
-      indexingMode: "files-only",
-      syncMode: "manual",
-    });
-  }
-
+  // Sync folder disabled centrally, no-op the rest of the workspace attachment
   return {
     linkedPath: pluginWorkspaceDir,
     auxiliaryFileCount: auxFiles.length,
-    workspaceRegistered: !alreadyLinked && !coveredByParent,
+    workspaceRegistered: false,
   };
 }
 
@@ -396,14 +370,14 @@ export async function POST(request: NextRequest) {
     // Link auxiliary files (references, scripts, etc.) to the agent's workspace
     const workspaceLink: WorkspaceLinkResult = characterId
       ? await linkPluginAuxiliaryFilesToWorkspace(plugin, parsed, characterId, dbUser.id).catch(
-          (err) => {
-            console.warn(
-              `[PluginImport:${requestId}] Failed to link auxiliary files (non-fatal):`,
-              err,
-            );
-            return { linkedPath: null, auxiliaryFileCount: 0, workspaceRegistered: false };
-          },
-        )
+        (err) => {
+          console.warn(
+            `[PluginImport:${requestId}] Failed to link auxiliary files (non-fatal):`,
+            err,
+          );
+          return { linkedPath: null, auxiliaryFileCount: 0, workspaceRegistered: false };
+        },
+      )
       : { linkedPath: null, auxiliaryFileCount: 0, workspaceRegistered: false };
 
     const inheritedConfig = buildInheritedConfig(initiatorMetadata);
@@ -411,13 +385,13 @@ export async function POST(request: NextRequest) {
     const createdAgents =
       parsed.components.agents.length > 0
         ? await createAgentsFromPlugin({
-            userId: dbUser.id,
-            pluginId: plugin.id,
-            pluginName: parsed.manifest.name,
-            pluginAgents: parsed.components.agents,
-            warnings: parsed.warnings,
-            inheritedConfig,
-          })
+          userId: dbUser.id,
+          pluginId: plugin.id,
+          pluginName: parsed.manifest.name,
+          pluginAgents: parsed.components.agents,
+          warnings: parsed.warnings,
+          inheritedConfig,
+        })
         : [];
 
     // Create workflow when we have created agents (with or without characterId)
@@ -455,15 +429,7 @@ export async function POST(request: NextRequest) {
           memberSeeds,
         });
 
-        // Sync shared folders from initiator to sub-agents (only when characterId provides an existing agent with folders)
-        if (characterId && subAgentIds.length > 0) {
-          await syncSharedFoldersToSubAgents({
-            userId: dbUser.id,
-            initiatorId,
-            subAgentIds,
-            workflowId: wf.id,
-          });
-        }
+        // Sync shared folders logic disabled for Saas
 
         // Auto-enable delegateToSubagent on the initiator if it has enabledTools configured
         if (subAgentIds.length > 0) {

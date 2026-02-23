@@ -135,21 +135,10 @@ export async function register() {
         console.error("[MemoryWatcher] Failed to start:", error);
       }
     }
-    
+
     // Initialize settings first
     const { initializeSettings } = await import("@/lib/settings/settings-manager");
     initializeSettings();
-    
-    // Initialize vector sync system (file watchers + background sync)
-    // Delay slightly to allow database to be ready
-    setTimeout(async () => {
-      try {
-        const { initializeVectorSync } = await import("@/lib/vectordb/background-sync");
-        await initializeVectorSync();
-      } catch (error) {
-        console.error("[Instrumentation] Error initializing vector sync:", error);
-      }
-    }, 2000);
 
     // Start observability cleanup job for stale runs
     setTimeout(async () => {

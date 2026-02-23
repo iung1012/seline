@@ -19,7 +19,6 @@ import type {
 } from "./types";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { getWebScraperProvider } from "@/lib/ai/web-scraper/provider";
-import { localScrapePage } from "@/lib/ai/web-scraper/local";
 import { logToolEvent } from "@/lib/ai/tool-registry/logging";
 
 // ============================================================================
@@ -171,68 +170,23 @@ async function fetchWebContent(
   });
 
   if (provider === "local") {
-    try {
-      const localResult = await localScrapePage(url, { onlyMainContent: true });
-      throwIfAborted(abortSignal);
-      const title = localResult.title || new URL(url).hostname;
+    logToolEvent({
+      level: "error",
+      toolName: "webBrowse.fetchContent",
+      sessionId,
+      event: "error",
+      durationMs: Date.now() - startTime,
+      error: "Local scraping provider is no longer supported in Seline Web SaaS.",
+      metadata: { url, provider: "local" },
+    });
 
-      const imageCandidates = localResult.images.length > 0 ? localResult.images : localResult.links;
-      const images = filterProductImages(imageCandidates);
-      const durationMs = Date.now() - startTime;
-
-      // Log success with detailed extraction metadata
-      logToolEvent({
-        level: "info",
-        toolName: "webBrowse.fetchContent",
-        sessionId,
-        event: "success",
-        durationMs,
-        result: {
-          provider: "local",
-          url,
-          title,
-          contentLength: localResult.markdown.length,
-          rawImagesExtracted: localResult.images.length,
-          rawLinksExtracted: localResult.links.length,
-          imageCandidateSource: localResult.images.length > 0 ? "images" : "links",
-          imageCandidatesCount: imageCandidates.length,
-          filteredImagesCount: images.length,
-          hasOgImage: !!localResult.ogImage,
-          sampleImages: images.slice(0, 3),
-        },
-      });
-
-      return {
-        success: true,
-        url,
-        title,
-        content: localResult.markdown,
-        images: images.length > 0 ? images : undefined,
-        ogImage: localResult.ogImage,
-      };
-    } catch (error) {
-      const durationMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : "Unknown fetch error";
-
-      // Log error event
-      logToolEvent({
-        level: "error",
-        toolName: "webBrowse.fetchContent",
-        sessionId,
-        event: "error",
-        durationMs,
-        error: errorMessage,
-        metadata: { url, provider: "local" },
-      });
-
-      return {
-        success: false,
-        url,
-        title: "",
-        content: "",
-        error: errorMessage,
-      };
-    }
+    return {
+      success: false,
+      url,
+      title: "",
+      content: "",
+      error: "Local scraping provider is no longer supported in Web execution.",
+    };
   }
 
   // Firecrawl provider
@@ -391,7 +345,7 @@ export async function browseAndSynthesize(
   const { urls, query, options, emit, abortSignal } = params;
   const { sessionId } = options;
 
-  const doEmit: WebBrowseEventEmitter = emit || (() => {});
+  const doEmit: WebBrowseEventEmitter = emit || (() => { });
   const fetchedUrls: string[] = [];
   const failedUrls: string[] = [];
 

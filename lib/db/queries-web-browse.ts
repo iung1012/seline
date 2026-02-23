@@ -1,10 +1,11 @@
-import { db } from "./sqlite-client";
-import { webBrowseEntries, images } from "./sqlite-schema";
-import type { NewWebBrowseEntry, WebBrowseEntry, NewImage } from "./sqlite-schema";
+import { db } from "./client";
+import { webBrowseEntries, images } from "./schema";
+import type { NewWebBrowseEntry, WebBrowseEntry, NewImage } from "./schema";
 import { eq, desc, and, lt, gt, inArray } from "drizzle-orm";
 
 // Web Browse Entries
 export async function upsertWebBrowseEntry(data: NewWebBrowseEntry): Promise<WebBrowseEntry> {
+  // First, remove existing entry for the same URL in this session
   await db
     .delete(webBrowseEntries)
     .where(and(eq(webBrowseEntries.sessionId, data.sessionId), eq(webBrowseEntries.url, data.url)));
@@ -18,7 +19,7 @@ export async function upsertWebBrowseEntry(data: NewWebBrowseEntry): Promise<Web
 }
 
 export async function listWebBrowseEntries(sessionId: string): Promise<WebBrowseEntry[]> {
-  const now = new Date().toISOString();
+  const now = new Date();
   return db.query.webBrowseEntries.findMany({
     where: and(eq(webBrowseEntries.sessionId, sessionId), gt(webBrowseEntries.expiresAt, now)),
     orderBy: desc(webBrowseEntries.fetchedAt),
@@ -30,7 +31,7 @@ export async function listWebBrowseEntriesByUrls(
   urls: string[]
 ): Promise<WebBrowseEntry[]> {
   if (urls.length === 0) return [];
-  const now = new Date().toISOString();
+  const now = new Date();
   return db.query.webBrowseEntries.findMany({
     where: and(
       eq(webBrowseEntries.sessionId, sessionId),
@@ -46,7 +47,7 @@ export async function deleteWebBrowseEntries(sessionId: string): Promise<void> {
 }
 
 export async function deleteExpiredWebBrowseEntries(): Promise<number> {
-  const now = new Date().toISOString();
+  const now = new Date();
   const deleted = await db
     .delete(webBrowseEntries)
     .where(lt(webBrowseEntries.expiresAt, now))

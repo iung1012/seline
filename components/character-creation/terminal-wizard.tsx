@@ -10,7 +10,6 @@ import {
   IdentityPage,
   CapabilitiesPage,
   KnowledgeBasePage,
-  VectorSearchPage,
   EmbeddingSetupPage,
   MCPToolsPage,
 } from "./terminal-pages";
@@ -418,15 +417,7 @@ export function TerminalWizard() {
                 onBack={() => navigateTo("identity", -1)}
               />
             )}
-            {currentPage === "vectorSearch" && draftAgentId && (
-              <VectorSearchPage
-                agentId={draftAgentId}
-                agentName={state.identity.name}
-                onSubmit={handleVectorSearchSubmit}
-                onBack={() => navigateTo("embeddingSetup", -1)}
-                onSkip={handleVectorSearchSubmit}
-              />
-            )}
+
             {currentPage === "embeddingSetup" && (
               <EmbeddingSetupPage
                 agentName={state.identity.name}

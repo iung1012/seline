@@ -21,10 +21,6 @@ import {
   getResearchModel,
   getVisionModel,
   getUtilityModel,
-  getConfiguredProvider,
-  getConfiguredModel,
-  getProviderDisplayName,
-  getProviderTemperature,
   type LLMProvider,
 } from "@/lib/ai/providers";
 
@@ -48,15 +44,16 @@ const SESSION_MODEL_KEYS = {
  * Get the model ID string for a session (for context window lookups).
  * Returns the session override if present, otherwise the global setting.
  */
-export function getSessionModelId(
+export async function getSessionModelId(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): string {
+): Promise<string> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (config?.sessionChatModel) {
     return config.sessionChatModel;
   }
   // Fall back to global settings
-  const settings = loadSettings();
+  const settings = await loadSettings(userId);
   return settings.chatModel || "claude-sonnet-4-5-20250929";
 }
 
@@ -64,14 +61,16 @@ export function getSessionModelId(
  * Get the provider for a session (for context window lookups).
  * Returns the session override if present, otherwise the global setting.
  */
-export function getSessionProvider(
+export async function getSessionProvider(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LLMProvider {
+): Promise<LLMProvider> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (config?.sessionProvider) {
     return config.sessionProvider;
   }
-  return getConfiguredProvider();
+  const settings = await loadSettings(userId);
+  return (settings.llmProvider as LLMProvider) || "anthropic";
 }
 
 /**
@@ -116,121 +115,118 @@ export function extractSessionModelConfig(
 
 /**
  * Resolve the chat model for a session.
- *
- * Priority:
- *   1. sessionMetadata.sessionChatModel (per-session override)
- *   2. Global chatModel from settings-manager.ts
- *   3. Provider default
  */
-export function resolveSessionChatModel(
+export async function resolveSessionChatModel(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LanguageModel {
+): Promise<LanguageModel> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (!config?.sessionChatModel) {
     // No session override — use global
-    return getChatModel();
+    return getChatModel(userId);
   }
 
   const modelId = config.sessionChatModel;
-  console.log(`[SESSION-RESOLVER] Using session chat model override: ${modelId}`);
+  console.log(`[SESSION-RESOLVER] User ${userId} using session chat model override: ${modelId}`);
 
   try {
-    return getModelByName(modelId);
+    return getModelByName(userId, modelId);
   } catch (error) {
-    console.warn(`[SESSION-RESOLVER] Failed to load session model "${modelId}", falling back to global:`, error);
-    return getChatModel();
+    console.warn(`[SESSION-RESOLVER] Failed to load session model "${modelId}" for user ${userId}, falling back to global:`, error);
+    return getChatModel(userId);
   }
 }
 
 /**
  * Resolve the primary language model for a session's streamText call.
  * This is the main entry point used by app/api/chat/route.ts.
- *
- * If the session has a model override, it returns that model.
- * Otherwise it returns getLanguageModel() (current behavior).
  */
-export function resolveSessionLanguageModel(
+export async function resolveSessionLanguageModel(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LanguageModel {
+): Promise<LanguageModel> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (!config?.sessionChatModel) {
-    return getLanguageModel();
+    return getLanguageModel(userId);
   }
 
   const modelId = config.sessionChatModel;
-  console.log(`[SESSION-RESOLVER] Using session language model override: ${modelId}`);
+  console.log(`[SESSION-RESOLVER] User ${userId} using session language model override: ${modelId}`);
 
   try {
-    return getModelByName(modelId);
+    return getModelByName(userId, modelId);
   } catch (error) {
-    console.warn(`[SESSION-RESOLVER] Failed to load session model "${modelId}", falling back to global:`, error);
-    return getLanguageModel();
+    console.warn(`[SESSION-RESOLVER] Failed to load session model "${modelId}" for user ${userId}, falling back to global:`, error);
+    return getLanguageModel(userId);
   }
 }
 
 /**
  * Resolve the research model for a session.
  */
-export function resolveSessionResearchModel(
+export async function resolveSessionResearchModel(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LanguageModel {
+): Promise<LanguageModel> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (!config?.sessionResearchModel) {
-    return getResearchModel();
+    return getResearchModel(userId);
   }
 
   const modelId = config.sessionResearchModel;
-  console.log(`[SESSION-RESOLVER] Using session research model override: ${modelId}`);
+  console.log(`[SESSION-RESOLVER] User ${userId} using session research model override: ${modelId}`);
 
   try {
-    return getModelByName(modelId);
+    return getModelByName(userId, modelId);
   } catch (error) {
-    console.warn(`[SESSION-RESOLVER] Failed to load session research model "${modelId}", falling back to global:`, error);
-    return getResearchModel();
+    console.warn(`[SESSION-RESOLVER] Failed to load session research model "${modelId}" for user ${userId}, falling back to global:`, error);
+    return getResearchModel(userId);
   }
 }
 
 /**
  * Resolve the vision model for a session.
  */
-export function resolveSessionVisionModel(
+export async function resolveSessionVisionModel(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LanguageModel {
+): Promise<LanguageModel> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (!config?.sessionVisionModel) {
-    return getVisionModel();
+    return getVisionModel(userId);
   }
 
   const modelId = config.sessionVisionModel;
-  console.log(`[SESSION-RESOLVER] Using session vision model override: ${modelId}`);
+  console.log(`[SESSION-RESOLVER] User ${userId} using session vision model override: ${modelId}`);
 
   try {
-    return getModelByName(modelId);
+    return getModelByName(userId, modelId);
   } catch (error) {
-    console.warn(`[SESSION-RESOLVER] Failed to load session vision model "${modelId}", falling back to global:`, error);
-    return getVisionModel();
+    console.warn(`[SESSION-RESOLVER] Failed to load session vision model "${modelId}" for user ${userId}, falling back to global:`, error);
+    return getVisionModel(userId);
   }
 }
 
 /**
  * Resolve the utility model for a session.
  */
-export function resolveSessionUtilityModel(
+export async function resolveSessionUtilityModel(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): LanguageModel {
+): Promise<LanguageModel> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (!config?.sessionUtilityModel) {
-    return getUtilityModel();
+    return getUtilityModel(userId);
   }
 
   const modelId = config.sessionUtilityModel;
-  console.log(`[SESSION-RESOLVER] Using session utility model override: ${modelId}`);
+  console.log(`[SESSION-RESOLVER] User ${userId} using session utility model override: ${modelId}`);
 
   try {
-    return getModelByName(modelId);
+    return getModelByName(userId, modelId);
   } catch (error) {
-    console.warn(`[SESSION-RESOLVER] Failed to load session utility model "${modelId}", falling back to global:`, error);
-    return getUtilityModel();
+    console.warn(`[SESSION-RESOLVER] Failed to load session utility model "${modelId}" for user ${userId}, falling back to global:`, error);
+    return getUtilityModel(userId);
   }
 }
 
@@ -281,13 +277,11 @@ const PROVIDER_NAMES: Record<string, string> = {
 
 /**
  * Get the display name for the LLM being used in a session.
- * Returns session override info if present, otherwise the global display name.
- *
- * Example: "OpenRouter (moonshotai/kimi-k2.5)" or "Claude Code (claude-sonnet-4-5)"
  */
-export function getSessionDisplayName(
+export async function getSessionDisplayName(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
-): string {
+): Promise<string> {
   const config = extractSessionModelConfig(sessionMetadata);
   if (config?.sessionChatModel) {
     const providerName = config.sessionProvider
@@ -295,28 +289,35 @@ export function getSessionDisplayName(
       : "Unknown";
     return `${providerName} (${config.sessionChatModel})`;
   }
-  // No session override — use global
-  return getProviderDisplayName();
+
+  const settings = await loadSettings(userId);
+  const provider = settings.llmProvider || "anthropic";
+  const providerName = PROVIDER_NAMES[provider] || provider;
+  const model = settings.chatModel || "claude-sonnet-4-5";
+
+  return `${providerName} (${model})`;
 }
 
 /**
  * Get the appropriate temperature for a session's provider.
- * Checks session-level provider override before falling back to global.
- *
- * This is critical for providers like Kimi that require fixed temperature values.
  */
-export function getSessionProviderTemperature(
+export async function getSessionProviderTemperature(
+  userId: string,
   sessionMetadata: Record<string, unknown> | null | undefined,
   requestedTemp: number,
-): number {
+): Promise<number> {
   const config = extractSessionModelConfig(sessionMetadata);
+  let provider: string;
+
   if (config?.sessionProvider) {
-    // Session has a provider override — check provider-specific temperature rules
-    if (config.sessionProvider === "kimi") {
-      return 1; // Kimi K2.5 fixed value
-    }
-    return requestedTemp;
+    provider = config.sessionProvider;
+  } else {
+    const settings = await loadSettings(userId);
+    provider = settings.llmProvider || "anthropic";
   }
-  // No session override — use global provider temperature logic
-  return getProviderTemperature(requestedTemp);
+
+  if (provider === "kimi") {
+    return 1; // Kimi K2.5 fixed value
+  }
+  return requestedTemp;
 }

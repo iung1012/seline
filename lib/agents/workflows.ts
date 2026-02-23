@@ -5,13 +5,6 @@ import {
   agentWorkflowMembers,
 } from "@/lib/db/sqlite-workflows-schema";
 import { agentSyncFolders } from "@/lib/db/sqlite-character-schema";
-import { notifyFolderChange } from "@/lib/vectordb/folder-events";
-import {
-  cleanupInheritedFoldersOnRemoval,
-  shareFolderToWorkflowSubagents,
-  syncOwnFoldersToWorkflowMembers,
-  syncSharedFoldersToSubAgents,
-} from "./workflow-folder-sharing";
 import {
   mapWorkflowRow,
   mapWorkflowMemberRow,
@@ -29,10 +22,7 @@ import {
 } from "./workflow-db-helpers";
 
 // ── Re-exports (keep all public names accessible from this path) ───────────────
-export {
-  shareFolderToWorkflowSubagents,
-  syncSharedFoldersToSubAgents,
-} from "./workflow-folder-sharing";
+
 
 export type {
   WorkflowStatus,
@@ -265,29 +255,8 @@ export async function createManualWorkflow(
     ],
   });
 
-  if (uniqueSubAgentIds.length > 0) {
-    // Sync initiator's folders → all subagents
-    await syncSharedFoldersToSubAgents({
-      userId: input.userId,
-      initiatorId: input.initiatorId,
-      subAgentIds: uniqueSubAgentIds,
-      workflowId: workflowRow.id,
-    });
-
-    // Sync each subagent's own folders → initiator + other subagents
-    for (const subAgentId of uniqueSubAgentIds) {
-      const otherMembers = [input.initiatorId, ...uniqueSubAgentIds.filter((id) => id !== subAgentId)];
-      await syncOwnFoldersToWorkflowMembers({
-        userId: input.userId,
-        sourceAgentId: subAgentId,
-        targetAgentIds: otherMembers,
-        workflowId: workflowRow.id,
-      });
-    }
-
-    // Refresh shared resources to reflect all members' folders
-    await refreshWorkflowSharedResources(workflowRow.id, input.initiatorId);
-  }
+  // Refresh shared resources to reflect all members' folders
+  await refreshWorkflowSharedResources(workflowRow.id, input.initiatorId);
 
   return mapWorkflowRow(workflowRow);
 }
@@ -337,35 +306,8 @@ export async function addSubagentToWorkflow(
     throw new Error("Agent is already in this workflow");
   }
 
-  if (input.syncFolders !== false) {
-    // Sync all existing members' folders → new subagent
-    await syncSharedFoldersToSubAgents({
-      userId: input.userId,
-      initiatorId: workflow.initiatorId,
-      subAgentIds: [input.agentId],
-      workflowId: input.workflowId,
-    });
-
-    // Sync the new subagent's own folders → all other existing members
-    const existingMembers = await getWorkflowMembers(input.workflowId);
-    const otherMemberIds = existingMembers
-      .map((m) => m.agentId)
-      .filter((id) => id !== input.agentId);
-
-    if (otherMemberIds.length > 0) {
-      await syncOwnFoldersToWorkflowMembers({
-        userId: input.userId,
-        sourceAgentId: input.agentId,
-        targetAgentIds: otherMemberIds,
-        workflowId: input.workflowId,
-      });
-    }
-
-    // Refresh shared resources to reflect the new member's folders
-    await refreshWorkflowSharedResources(input.workflowId, workflow.initiatorId);
-  } else {
-    await touchWorkflow(input.workflowId);
-  }
+  // Refresh shared resources to reflect the new member's folders
+  await refreshWorkflowSharedResources(input.workflowId, workflow.initiatorId);
 
   return member;
 }
@@ -492,14 +434,6 @@ export async function removeWorkflowMember(
     nextInitiatorId = replacement.agentId;
   }
 
-  // Clean up inherited folders before removing the member
-  await cleanupInheritedFoldersOnRemoval({
-    workflowId: input.workflowId,
-    leavingAgentId: input.agentId,
-    remainingMemberIds: members
-      .map((m) => m.agentId)
-      .filter((id) => id !== input.agentId),
-  });
 
   await db
     .delete(agentWorkflowMembers)
@@ -521,7 +455,6 @@ export async function deleteWorkflow(workflowId: string, userId: string): Promis
   const workflow = await getWorkflowById(workflowId, userId);
   if (!workflow) throw new Error("Workflow not found");
 
-  // Clean up all inherited sync folders for every member before deleting the workflow
   const members = await getWorkflowMembers(workflowId);
   for (const member of members) {
     const inherited = await db
@@ -543,9 +476,6 @@ export async function deleteWorkflow(workflowId: string, userId: string): Promis
             eq(agentSyncFolders.inheritedFromWorkflowId, workflowId)
           )
         );
-      for (const { id } of inherited) {
-        notifyFolderChange(member.agentId, { type: "removed", folderId: id, wasPrimary: false });
-      }
     }
   }
 
@@ -699,15 +629,7 @@ export async function createSystemAgentWorkflow(input: {
     ],
   });
 
-  if (uniqueSubAgentIds.length > 0) {
-    await syncSharedFoldersToSubAgents({
-      userId: input.userId,
-      initiatorId: input.initiatorId,
-      subAgentIds: uniqueSubAgentIds,
-      workflowId: workflowRow.id,
-    });
-    await refreshWorkflowSharedResources(workflowRow.id, input.initiatorId);
-  }
+  await refreshWorkflowSharedResources(workflowRow.id, input.initiatorId);
 
   return mapWorkflowRow(workflowRow);
 }

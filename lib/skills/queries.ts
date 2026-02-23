@@ -1,9 +1,14 @@
-import { and, asc, desc, eq, gte, like, lte, or, sql } from "drizzle-orm";
-import { db } from "@/lib/db/sqlite-client";
-import { characters } from "@/lib/db/sqlite-character-schema";
-import { scheduledTaskRuns, scheduledTasks } from "@/lib/db/sqlite-schedule-schema";
-import { skillFiles, skillVersions, skills } from "@/lib/db/sqlite-skills-schema";
-import type { SkillFile } from "@/lib/db/sqlite-skills-schema";
+import { and, asc, desc, eq, gte, ilike, lte, or, sql } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import {
+  characters,
+  scheduledTaskRuns,
+  scheduledTasks,
+  skillFiles,
+  skillVersions,
+  skills
+} from "@/lib/db/schema";
+import type { SkillFile } from "@/lib/db/schema";
 import type { ParsedSkillPackage } from "./import-parser";
 import path from "path";
 import type {
@@ -48,6 +53,12 @@ function normalizeStringArray(value: unknown): string[] {
   return value.map((item) => String(item || "").trim()).filter((item) => item.length > 0);
 }
 
+function ensureString(val: any): string {
+  if (val instanceof Date) return val.toISOString();
+  if (val === null || val === undefined) return "";
+  return String(val);
+}
+
 function mapSkillRecord(row: typeof skills.$inferSelect): SkillRecord {
   return {
     id: row.id,
@@ -64,14 +75,14 @@ function mapSkillRecord(row: typeof skills.$inferSelect): SkillRecord {
     version: row.version,
     copiedFromSkillId: row.copiedFromSkillId,
     copiedFromCharacterId: row.copiedFromCharacterId,
-    sourceType: row.sourceType,
+    sourceType: row.sourceType as any,
     sourceSessionId: row.sourceSessionId,
     runCount: row.runCount,
     successCount: row.successCount,
-    lastRunAt: row.lastRunAt,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    lastRunAt: row.lastRunAt ? row.lastRunAt.toISOString() : null,
+    status: row.status as SkillStatus,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
@@ -85,7 +96,7 @@ function mapSkillVersionRecord(row: typeof skillVersions.$inferSelect): SkillVer
     toolHints: normalizeStringArray(row.toolHints),
     description: row.description,
     changeReason: row.changeReason,
-    createdAt: row.createdAt,
+    createdAt: row.createdAt.toISOString(),
   };
 }
 
@@ -156,11 +167,16 @@ export async function listSkillsForUser(
   const textQuery = (filters.q || filters.query || "").trim();
   if (textQuery) {
     conditions.push(
-      or(like(skills.name, `%${textQuery}%`), like(skills.description, `%${textQuery}%`))!
+      or(ilike(skills.name, `%${textQuery}%`), ilike(skills.description, `%${textQuery}%`))!
     );
   }
-  if (filters.updatedFrom) conditions.push(gte(skills.updatedAt, filters.updatedFrom));
-  if (filters.updatedTo) conditions.push(lte(skills.updatedAt, filters.updatedTo));
+
+  if (filters.updatedFrom) {
+    conditions.push(gte(skills.updatedAt, new Date(filters.updatedFrom)));
+  }
+  if (filters.updatedTo) {
+    conditions.push(lte(skills.updatedAt, new Date(filters.updatedTo)));
+  }
 
   const rows = await db.query.skills.findMany({
     where: and(...conditions),
@@ -200,7 +216,7 @@ export async function findSkillByNameLike(
       eq(skills.userId, userId),
       eq(skills.characterId, characterId),
       eq(skills.status, "active"),
-      or(like(skills.name, `%${query}%`), like(skills.description, `%${query}%`))!
+      or(ilike(skills.name, `%${query}%`), ilike(skills.description, `%${query}%`))!
     ),
     orderBy: [desc(skills.updatedAt)],
     limit: 10,
@@ -237,7 +253,7 @@ export async function updateSkill(
     };
   }
 
-  const patch: Partial<typeof skills.$inferInsert> = { updatedAt: new Date().toISOString() };
+  const patch: any = { updatedAt: new Date() };
   const changedFields: SkillUpdateField[] = [];
   const warnings: string[] = [];
 
@@ -282,7 +298,7 @@ export async function updateSkill(
       changedFields.push("category");
     }
   }
-  if (updates.status !== undefined && updates.status !== existing.status) {
+  if (updates.status !== undefined && (updates.status as any) !== existing.status) {
     patch.status = updates.status;
     changedFields.push("status");
   }
@@ -347,8 +363,8 @@ export async function updateSkillRunStats(
     .set({
       runCount: sql`${skills.runCount} + 1`,
       successCount: succeeded ? sql`${skills.successCount} + 1` : sql`${skills.successCount}`,
-      lastRunAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      lastRunAt: new Date(),
+      updatedAt: new Date(),
     })
     .where(and(eq(skills.id, skillId), eq(skills.userId, userId)));
 }
@@ -517,13 +533,13 @@ export async function listSkillRunHistory(skillId: string, userId: string, limit
     runId: row.runId,
     taskId: row.taskId,
     taskName: row.taskName,
-    status: row.status,
-    scheduledFor: row.scheduledFor,
-    startedAt: row.startedAt,
-    completedAt: row.completedAt,
+    status: row.status as any,
+    scheduledFor: ensureString(row.scheduledFor),
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     durationMs: row.durationMs,
     error: row.error,
-    createdAt: row.createdAt,
+    createdAt: row.createdAt.toISOString(),
   }));
 }
 
@@ -547,15 +563,12 @@ export async function getSkillsSummaryForPrompt(characterId: string): Promise<Ar
     name: row.name,
     description: row.description || "",
     triggerExamples: normalizeStringArray(row.triggerExamples),
-    status: row.status,
+    status: row.status as SkillStatus,
     hasScripts: Boolean(row.hasScripts),
     scriptLanguages: normalizeStringArray(row.scriptLanguages),
   }));
 }
 
-/**
- * Import a parsed skill package into the database.
- */
 export async function importSkillPackage(input: {
   userId: string;
   characterId: string;
@@ -563,7 +576,6 @@ export async function importSkillPackage(input: {
 }): Promise<SkillRecord> {
   const { userId, characterId, parsedSkill } = input;
 
-  // Detect script languages
   const scriptLanguages = Array.from(
     new Set(
       parsedSkill.scripts
@@ -578,7 +590,6 @@ export async function importSkillPackage(input: {
     )
   );
 
-  // Create skill record
   const [skill] = await db
     .insert(skills)
     .values({
@@ -600,26 +611,22 @@ export async function importSkillPackage(input: {
     })
     .returning();
 
-  // Insert all files
   if (parsedSkill.files.length > 0) {
     await db.insert(skillFiles).values(
       parsedSkill.files.map((file) => ({
         skillId: skill.id,
         relativePath: file.relativePath,
-        content: file.content,
+        content: file.content instanceof Buffer ? file.content.toString("utf-8") : String(file.content),
         mimeType: file.mimeType,
         size: file.size,
         isExecutable: file.isExecutable,
-      }))
+      })) as any
     );
   }
 
   return mapSkillRecord(skill);
 }
 
-/**
- * Get all files for a skill.
- */
 export async function getSkillFiles(
   skillId: string,
   userId: string
@@ -637,9 +644,6 @@ export async function getSkillFiles(
   });
 }
 
-/**
- * Get a single file by path.
- */
 export async function getSkillFile(
   skillId: string,
   relativePath: string,
@@ -662,15 +666,12 @@ export async function getSkillFile(
   return file || null;
 }
 
-/**
- * Get all executable scripts for a skill.
- */
 export async function getSkillScripts(
   skillId: string,
   userId: string
 ): Promise<SkillFile[]> {
   const allFiles = await getSkillFiles(skillId, userId);
-  return allFiles.filter((file) => 
+  return allFiles.filter((file) =>
     file.relativePath.startsWith("scripts/") && file.isExecutable
   );
 }

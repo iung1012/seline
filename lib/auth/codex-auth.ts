@@ -34,9 +34,6 @@ export const CODEX_CONFIG = {
   JWT_CLAIM_PATH: "https://api.openai.com/auth",
 } as const;
 
-let cachedAuthState: CodexAuthState | null = null;
-let cachedToken: CodexOAuthToken | null = null;
-
 function decodeBase64Url(input: string): string {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), "=");
@@ -57,42 +54,32 @@ export function decodeCodexJWT(token: string): { accountId?: string; email?: str
   }
 }
 
-export function getCodexAuthState(): CodexAuthState {
-  if (cachedAuthState) return cachedAuthState;
-
-  const settings = loadSettings();
-  const state: CodexAuthState = {
+export async function getCodexAuthState(userId: string): Promise<CodexAuthState> {
+  const settings = await loadSettings(userId);
+  return {
     isAuthenticated: !!settings.codexAuth?.isAuthenticated,
     email: settings.codexAuth?.email,
     accountId: settings.codexAuth?.accountId,
     expiresAt: settings.codexAuth?.expiresAt,
     lastRefresh: settings.codexAuth?.lastRefresh,
   };
-
-  cachedAuthState = state;
-  return state;
 }
 
-export function getCodexToken(): CodexOAuthToken | null {
-  if (cachedToken) return cachedToken;
-
-  const settings = loadSettings();
-  if (!settings.codexToken) return null;
-
-  cachedToken = settings.codexToken;
-  return cachedToken;
+export async function getCodexToken(userId: string): Promise<CodexOAuthToken | null> {
+  const settings = await loadSettings(userId);
+  return settings.codexToken || null;
 }
 
-export function isCodexTokenValid(): boolean {
-  const token = getCodexToken();
+export async function isCodexTokenValid(userId: string): Promise<boolean> {
+  const token = await getCodexToken(userId);
   if (!token) return false;
 
   const now = Date.now();
   return token.expires_at > (now + CODEX_CONFIG.REFRESH_THRESHOLD_MS);
 }
 
-export function needsCodexTokenRefresh(): boolean {
-  const token = getCodexToken();
+export async function needsCodexTokenRefresh(userId: string): Promise<boolean> {
+  const token = await getCodexToken(userId);
   if (!token) return false;
 
   const now = Date.now();
@@ -100,16 +87,16 @@ export function needsCodexTokenRefresh(): boolean {
   return expiresAt <= (now + CODEX_CONFIG.REFRESH_THRESHOLD_MS) && expiresAt > now;
 }
 
-export function saveCodexToken(
+export async function saveCodexToken(
+  userId: string,
   token: CodexOAuthToken,
   email?: string,
   accountId?: string,
   setAsActiveProvider = false
-): void {
-  const settings = loadSettings();
+): Promise<void> {
+  const settings = await loadSettings(userId);
 
   settings.codexToken = token;
-
   settings.codexAuth = {
     isAuthenticated: true,
     email: email || settings.codexAuth?.email,
@@ -118,62 +105,40 @@ export function saveCodexToken(
     lastRefresh: Date.now(),
   };
 
-  // Only switch active provider during explicit user-driven auth flows.
-  // Token refresh must not mutate provider selection.
   if (setAsActiveProvider) {
     settings.llmProvider = "codex";
   }
 
-  saveSettings(settings);
-
-  cachedToken = token;
-  cachedAuthState = settings.codexAuth;
+  await saveSettings(settings, userId);
 }
 
-export function clearCodexAuth(): void {
-  const settings = loadSettings();
+export async function clearCodexAuth(userId: string): Promise<void> {
+  const settings = await loadSettings(userId);
   delete settings.codexToken;
   settings.codexAuth = { isAuthenticated: false };
-  saveSettings(settings);
-
-  cachedToken = null;
-  cachedAuthState = { isAuthenticated: false };
+  await saveSettings(settings, userId);
 }
 
-export function invalidateCodexAuthCache(): void {
-  cachedToken = null;
-  cachedAuthState = null;
-}
-
-export function getCodexAccessToken(): string | null {
-  const token = getCodexToken();
-  if (!token) return null;
-
-  if (token.expires_at <= Date.now()) {
-    return null;
-  }
-
+export async function getCodexAccessToken(userId: string): Promise<string | null> {
+  const token = await getCodexToken(userId);
+  if (!token || token.expires_at <= Date.now()) return null;
   return token.access_token;
 }
 
-export function isCodexAuthenticated(): boolean {
-  const state = getCodexAuthState();
+export async function isCodexAuthenticated(userId: string): Promise<boolean> {
+  const state = await getCodexAuthState(userId);
   if (!state.isAuthenticated) return false;
-  return isCodexTokenValid();
+  return await isCodexTokenValid(userId);
 }
 
-export async function refreshCodexToken(): Promise<boolean> {
-  const token = getCodexToken();
-  if (!token?.refresh_token) {
-    return false;
-  }
+export async function refreshCodexToken(userId: string): Promise<boolean> {
+  const token = await getCodexToken(userId);
+  if (!token?.refresh_token) return false;
 
   try {
     const response = await fetch(CODEX_OAUTH.TOKEN_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: token.refresh_token,
@@ -181,43 +146,32 @@ export async function refreshCodexToken(): Promise<boolean> {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[CodexAuth] Token refresh failed:", response.status, errorText);
-      return false;
+    if (!response.ok) return false;
+
+    const data = await response.json();
+    if (data.access_token) {
+      const decoded = decodeCodexJWT(data.access_token);
+      const newToken: CodexOAuthToken = {
+        type: "oauth",
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || token.refresh_token,
+        expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+      };
+
+      await saveCodexToken(userId, newToken, decoded?.email, decoded?.accountId);
+      return true;
     }
-
-    const data = await response.json() as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    };
-
-    if (!data.access_token || !data.refresh_token || typeof data.expires_in !== "number") {
-      console.error("[CodexAuth] Token refresh response missing fields:", data);
-      return false;
-    }
-
-    const decoded = decodeCodexJWT(data.access_token);
-    const newToken: CodexOAuthToken = {
-      type: "oauth",
-      access_token: data.access_token,
-      refresh_token: data.refresh_token,
-      expires_at: Date.now() + data.expires_in * 1000,
-    };
-
-    saveCodexToken(newToken, decoded?.email, decoded?.accountId);
-    return true;
+    return false;
   } catch (error) {
-    console.error("[CodexAuth] Token refresh error:", error);
+    console.error("[CodexAuth] Refresh error:", error);
     return false;
   }
 }
 
-export async function ensureValidCodexToken(): Promise<boolean> {
-  if (isCodexTokenValid()) return true;
-  if (needsCodexTokenRefresh()) {
-    return refreshCodexToken();
+export async function ensureValidCodexToken(userId: string): Promise<boolean> {
+  if (await isCodexTokenValid(userId)) return true;
+  if (await needsCodexTokenRefresh(userId)) {
+    return await refreshCodexToken(userId);
   }
   return false;
 }
@@ -225,6 +179,7 @@ export async function ensureValidCodexToken(): Promise<boolean> {
 export async function exchangeCodexAuthorizationCode(
   code: string,
   verifier: string,
+  userId: string,
   redirectUri: string = CODEX_OAUTH.REDIRECT_URI,
 ): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
   const response = await fetch(CODEX_OAUTH.TOKEN_URL, {
@@ -239,26 +194,14 @@ export async function exchangeCodexAuthorizationCode(
     }),
   });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    console.error("[CodexAuth] Code exchange failed:", response.status, text);
-    return null;
-  }
+  if (!response.ok) return null;
 
-  const data = await response.json() as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-  };
-
-  if (!data.access_token || !data.refresh_token || typeof data.expires_in !== "number") {
-    console.error("[CodexAuth] Code exchange response missing fields:", data);
-    return null;
-  }
+  const data = await response.json();
+  if (!data.access_token) return null;
 
   return {
     access_token: data.access_token,
-    refresh_token: data.refresh_token,
+    refresh_token: data.refresh_token || "",
     expires_in: data.expires_in,
   };
 }

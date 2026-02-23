@@ -8,7 +8,7 @@ import { ContextWindowManager } from "@/lib/context-window";
 import { getSessionModelId, getSessionProvider, resolveSessionLanguageModel, getSessionDisplayName, getSessionProviderTemperature } from "@/lib/ai/session-model-resolver";
 import { generateSessionTitle } from "@/lib/ai/title-generator";
 import { createSession, createMessage, getSession, getOrCreateLocalUser, updateSession } from "@/lib/db/queries";
-import { requireAuth } from "@/lib/auth/local-auth";
+import { requireAuth, getUserById } from "@/lib/auth/local-auth";
 import { loadSettings } from "@/lib/settings/settings-manager";
 import { sessionHasTruncatedContent } from "@/lib/ai/truncated-content-store";
 import { taskRegistry } from "@/lib/background-tasks/registry";
@@ -71,7 +71,7 @@ import {
 } from "./canonical-content";
 import { buildToolsForRequest } from "./tools-builder";
 import { prepareMessagesForRequest } from "./message-prep";
-import { createOnFinishCallback, createOnAbortCallback } from "./stream-callbacks";
+import { createOnFinishCallback, createOnAbortCallback, type StreamCallbackContext } from "./stream-callbacks";
 import { createSyncStreamingMessage } from "./streaming-progress";
 import { buildSystemPromptForRequest } from "./system-prompt-builder";
 
@@ -80,9 +80,6 @@ initializeToolEventHandler();
 
 // Maximum request duration in seconds
 export const maxDuration = 300;
-
-// Ensure settings are loaded (syncs provider selection to process.env)
-loadSettings();
 
 // Initialize tool registry once per runtime
 registerAllTools();
@@ -130,14 +127,22 @@ export async function POST(req: Request) {
       userId = await requireAuth(req);
     }
 
-    const settings = loadSettings();
-    const dbUser = await getOrCreateLocalUser(userId, settings.localUserEmail);
+    const settings = await loadSettings(userId);
+    let dbUser = await getUserById(userId);
+    if (!dbUser && userId === "system-internal") {
+      dbUser = await getOrCreateLocalUser("00000000-0000-0000-0000-000000000000", "system@internal.api");
+      userId = dbUser.id;
+    }
+
+    if (!dbUser) {
+      throw new Error("User context unavailable");
+    }
 
     const selectedProvider = (settings.llmProvider || process.env.LLM_PROVIDER || "").toLowerCase();
 
     if (!isInternalAuth) {
       if (selectedProvider === "antigravity") {
-        const tokenValid = await ensureAntigravityTokenValid();
+        const tokenValid = await ensureAntigravityTokenValid(userId);
         if (!tokenValid) {
           return new Response(
             JSON.stringify({ error: "Antigravity authentication expired. Please re-authenticate in Settings." }),
@@ -147,7 +152,7 @@ export async function POST(req: Request) {
       }
 
       if (selectedProvider === "claudecode") {
-        const tokenValid = await ensureClaudeCodeTokenValid();
+        const tokenValid = await ensureClaudeCodeTokenValid(userId);
         if (!tokenValid) {
           return new Response(
             JSON.stringify({ error: "Claude Code authentication expired. Please re-authenticate in Settings." }),
@@ -205,12 +210,12 @@ export async function POST(req: Request) {
       isNewSession = true;
       sessionMetadata = (session.metadata as Record<string, unknown>) || {};
     } else {
-      const session = await getSession(sessionId);
+      const session = await getSession(sessionId, userId);
       if (!session) {
         const newSession = await createSession({
           id: sessionId,
           title: "New Design Session",
-          userId: dbUser.id,
+          userId: userId as any,
           metadata: isValidIanaTimezone(userTimezoneHeader)
             ? { userTimezone: userTimezoneHeader }
             : {},
@@ -218,11 +223,6 @@ export async function POST(req: Request) {
         sessionId = newSession.id;
         isNewSession = true;
         sessionMetadata = (newSession.metadata as Record<string, unknown>) || {};
-      } else if (session.userId !== dbUser.id) {
-        return new Response(
-          JSON.stringify({ error: "Forbidden" }),
-          { status: 403, headers: { "Content-Type": "application/json" } }
-        );
       } else {
         sessionMetadata = (session.metadata as Record<string, unknown>) || {};
       }
@@ -231,10 +231,10 @@ export async function POST(req: Request) {
     // Keep session timezone fresh so tools in this same request can rely on it.
     if (isValidIanaTimezone(userTimezoneHeader) && sessionMetadata.userTimezone !== userTimezoneHeader) {
       sessionMetadata = { ...sessionMetadata, userTimezone: userTimezoneHeader };
-      await updateSession(sessionId, { metadata: sessionMetadata });
+      await updateSession(sessionId, { metadata: sessionMetadata }, userId);
     }
 
-    const appSettings = loadSettings();
+    const appSettings = await loadSettings(userId);
     const toolLoadingMode = appSettings.toolLoadingMode ?? "deferred";
     const eventCharacterId = characterId || ((sessionMetadata?.characterId as string | undefined) ?? "");
     const shouldEmitProgress = Boolean(sessionId);
@@ -251,15 +251,15 @@ export async function POST(req: Request) {
 
     const syncStreamingMessage = shouldEmitProgress && streamingState
       ? createSyncStreamingMessage({
-          sessionId,
-          userId: dbUser.id,
-          eventCharacterId,
-          scheduledRunId,
-          scheduledTaskId,
-          scheduledTaskName,
-          getAgentRunId: () => agentRun?.id,
-          streamingState,
-        })
+        sessionId,
+        userId: dbUser.id,
+        eventCharacterId,
+        scheduledRunId,
+        scheduledTaskId,
+        scheduledTaskName,
+        getAgentRunId: () => agentRun?.id,
+        streamingState,
+      })
       : undefined;
 
     const contextTracking = getContextInjectionTracking(sessionMetadata);
@@ -267,8 +267,8 @@ export async function POST(req: Request) {
     console.log(`[CHAT API] Context injection: isNew=${isNewSession}, tracking=${JSON.stringify(contextTracking)}, inject=${injectContext}`);
 
     // ── Context window pre-flight check ───────────────────────────────────────
-    const currentModelId = getSessionModelId(sessionMetadata);
-    const currentProvider = getSessionProvider(sessionMetadata);
+    const currentModelId = await getSessionModelId(userId, sessionMetadata);
+    const currentProvider = await getSessionProvider(userId, sessionMetadata);
     const contextCheck = await ContextWindowManager.preFlightCheck(
       sessionId,
       currentModelId,
@@ -324,10 +324,10 @@ export async function POST(req: Request) {
       messageCount: messages.length,
       metadata: isScheduledRun || isChannelSource || isDelegation
         ? {
-            ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
-            ...(isChannelSource ? { suppressFromUI: true, taskSource: "channel" } : {}),
-            ...(isDelegation ? { isDelegation: true, parentAgentId: sessionMetadata.parentAgentId, workflowId: sessionMetadata.workflowId } : {}),
-          }
+          ...(isScheduledRun ? { scheduledRunId: scheduledRunId ?? undefined, scheduledTaskId: scheduledTaskId ?? undefined } : {}),
+          ...(isChannelSource ? { suppressFromUI: true, taskSource: "channel" } : {}),
+          ...(isDelegation ? { isDelegation: true, parentAgentId: sessionMetadata.parentAgentId, workflowId: sessionMetadata.workflowId } : {}),
+        }
         : undefined,
     };
     const existingTask = taskRegistry.get(agentRun.id);
@@ -485,9 +485,9 @@ export async function POST(req: Request) {
     }
 
     // ── Stream setup ───────────────────────────────────────────────────────────
-    const provider = getSessionProvider(sessionMetadata);
+    const provider = await getSessionProvider(userId, sessionMetadata);
     configuredProvider = provider;
-    console.log(`[CHAT API] Using LLM: ${getSessionDisplayName(sessionMetadata)}, inject=${injectContext}, caching=${useCaching ? "on" : "off"}`);
+    console.log(`[CHAT API] Using LLM: ${await getSessionDisplayName(userId, sessionMetadata)}, inject=${injectContext}, caching=${useCaching ? "on" : "off"}`);
 
     const runFinalized = { value: false };
 
@@ -539,7 +539,8 @@ export async function POST(req: Request) {
     const streamAbortSignal = combineAbortSignals([req.signal, chatAbortController.signal]);
 
     // Build shared callback context
-    const callbackCtx = {
+    const callbackCtx: StreamCallbackContext = {
+      userId,
       sessionId,
       characterId,
       sessionMetadata,
@@ -569,14 +570,14 @@ export async function POST(req: Request) {
       withRunContext(
         { runId, sessionId, pipelineName: "chat", characterId: characterId || undefined },
         async () => streamText({
-          model: resolveSessionLanguageModel(sessionMetadata),
+          model: await resolveSessionLanguageModel(userId, sessionMetadata),
           ...(injectContext && { system: systemPromptValue }),
           messages: cachedMessages,
           tools: allToolsWithMCP,
           activeTools: initialActiveToolNames as (keyof typeof allToolsWithMCP)[],
           abortSignal: streamAbortSignal,
           stopWhen: stepCountIs(AI_CONFIG.maxSteps),
-          temperature: getSessionProviderTemperature(sessionMetadata, initialActiveToolNames.length > 0 ? AI_CONFIG.toolTemperature : AI_CONFIG.temperature),
+          temperature: await getSessionProviderTemperature(userId, sessionMetadata, initialActiveToolNames.length > 0 ? AI_CONFIG.toolTemperature : AI_CONFIG.temperature),
           toolChoice: AI_CONFIG.toolChoice,
           prepareStep: async ({ stepNumber, messages: stepMessages }) => {
             let activeToolSet: Set<string>;
@@ -635,10 +636,11 @@ export async function POST(req: Request) {
               };
             }
 
-            return { activeTools: currentActiveTools as (keyof typeof tools)[] };
+            return { activeTools: currentActiveTools as string[] as (keyof typeof allToolsWithMCP)[] };
           },
           onError: async ({ error }) => {
             const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            const provider = await getSessionProvider(userId, sessionMetadata);
             await finalizeFailedRun(errorMessage, detectCreditError(errorMessage), { sourceError: error, streamAborted: streamAbortSignal.aborted });
           },
           onChunk: shouldEmitProgress
@@ -741,7 +743,7 @@ export async function POST(req: Request) {
         });
         const runStatus = shouldCancel ? "cancelled" : "failed";
         removeChatAbortController(agentRun.id);
-        removeLivePromptQueue(agentRun.id, sessionId);
+        removeLivePromptQueue(agentRun.id, "");
         await completeAgentRun(agentRun.id, runStatus, shouldCancel
           ? { reason: "stream_interrupted" }
           : { error: isCreditError ? "Insufficient credits" : errorMessage });

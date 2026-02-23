@@ -1,11 +1,11 @@
-import { db } from "./sqlite-client";
-import { agentDocuments, agentDocumentChunks } from "./sqlite-schema";
+import { db } from "./client";
+import { agentDocuments, agentDocumentChunks } from "./schema";
 import type {
   AgentDocument,
   NewAgentDocument,
   AgentDocumentChunk,
   NewAgentDocumentChunk,
-} from "./sqlite-schema";
+} from "./schema";
 import { eq, desc, asc, and, notInArray, sql } from "drizzle-orm";
 
 // Agent Documents & Chunks
@@ -58,21 +58,12 @@ export async function listReadyAgentDocumentsForCharacter(
   });
 }
 
-/**
- * Find a Knowledge Base document by filename or title for a specific agent.
- * Used by readFile tool to support reading KB documents in addition to synced folders.
- *
- * Matches are case-insensitive and support partial matching for flexibility.
- * Priority: exact originalFilename > exact title > partial originalFilename > partial title
- */
 export async function findAgentDocumentByName(
   characterId: string,
   searchName: string
 ): Promise<AgentDocument | null> {
-  // Normalize the search name (remove path if present, lowercase for comparison)
   const normalizedName = searchName.split(/[/\\]/).pop()?.toLowerCase() || searchName.toLowerCase();
 
-  // First, try to find documents for this character that are ready
   const documents = await db.query.agentDocuments.findMany({
     where: and(
       eq(agentDocuments.characterId, characterId),
@@ -85,7 +76,6 @@ export async function findAgentDocumentByName(
 
   if (!documents.length) return null;
 
-  // Score each document for match quality
   let bestMatch: AgentDocument | null = null;
   let bestScore = 0;
 
@@ -95,20 +85,15 @@ export async function findAgentDocumentByName(
 
     let score = 0;
 
-    // Exact matches (highest priority)
     if (filename === normalizedName) {
       score = 100;
     } else if (title === normalizedName) {
       score = 90;
-    }
-    // Partial matches
-    else if (filename.includes(normalizedName) || normalizedName.includes(filename)) {
+    } else if (filename.includes(normalizedName) || normalizedName.includes(filename)) {
       score = 70;
     } else if (title && (title.includes(normalizedName) || normalizedName.includes(title))) {
       score = 60;
-    }
-    // Extension-stripped matching (e.g., "report" matches "report.pdf")
-    else {
+    } else {
       const filenameNoExt = filename.replace(/\.[^/.]+$/, "");
       const searchNoExt = normalizedName.replace(/\.[^/.]+$/, "");
 
@@ -125,7 +110,7 @@ export async function findAgentDocumentByName(
     }
   }
 
-  return bestMatch;
+  return bestMatch; BestMatch;
 }
 
 export async function updateAgentDocument(
@@ -135,7 +120,7 @@ export async function updateAgentDocument(
 ): Promise<AgentDocument | null> {
   const [document] = await db
     .update(agentDocuments)
-    .set({ ...data, updatedAt: new Date().toISOString() })
+    .set({ ...data, updatedAt: new Date() })
     .where(and(eq(agentDocuments.id, id), eq(agentDocuments.userId, userId)))
     .returning();
   return document ?? null;
@@ -148,11 +133,11 @@ export async function deleteAgentDocument(id: string, userId: string): Promise<v
 }
 
 export async function getExpiredAgentDocuments(): Promise<AgentDocument[]> {
-  const now = new Date().toISOString();
+  // Use PostgreSQL jsonb access
   return db.select()
     .from(agentDocuments)
     .where(
-      sql`json_extract(${agentDocuments.metadata}, '$.expiresAt') < ${now}`
+      sql`${agentDocuments.metadata}->>'expiresAt' < ${new Date().toISOString()}`
     );
 }
 

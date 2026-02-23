@@ -4,14 +4,7 @@
  * Shared utilities for all file system tools (readFile, editFile, writeFile, patchFile).
  */
 
-export {
-  isPathAllowed,
-  resolveSyncedFolderPaths,
-  ensureParentDirectories,
-  findSimilarFiles,
-  validatePath,
-  normalizePath,
-} from "./path-utils";
+
 
 export {
   recordFileRead,
@@ -39,6 +32,4 @@ export {
   type ApplyEditsResult,
 } from "./edit-logic";
 
-export {
-  atomicWriteFile,
-} from "./write-utils";
+

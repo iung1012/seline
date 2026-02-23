@@ -35,44 +35,31 @@ export const CLAUDECODE_CONFIG = {
   REQUIRED_SYSTEM_PREFIX: "You are Claude Code, Anthropic's official CLI for Claude.",
 } as const;
 
-let cachedAuthState: ClaudeCodeAuthState | null = null;
-let cachedToken: ClaudeCodeOAuthToken | null = null;
-
-export function getClaudeCodeAuthState(): ClaudeCodeAuthState {
-  if (cachedAuthState) return cachedAuthState;
-
-  const settings = loadSettings();
-  const state: ClaudeCodeAuthState = {
+export async function getClaudeCodeAuthState(userId: string): Promise<ClaudeCodeAuthState> {
+  const settings = await loadSettings(userId);
+  return {
     isAuthenticated: !!settings.claudecodeAuth?.isAuthenticated,
     email: settings.claudecodeAuth?.email,
     expiresAt: settings.claudecodeAuth?.expiresAt,
     lastRefresh: settings.claudecodeAuth?.lastRefresh,
   };
-
-  cachedAuthState = state;
-  return state;
 }
 
-export function getClaudeCodeToken(): ClaudeCodeOAuthToken | null {
-  if (cachedToken) return cachedToken;
-
-  const settings = loadSettings();
-  if (!settings.claudecodeToken) return null;
-
-  cachedToken = settings.claudecodeToken;
-  return cachedToken;
+export async function getClaudeCodeToken(userId: string): Promise<ClaudeCodeOAuthToken | null> {
+  const settings = await loadSettings(userId);
+  return settings.claudecodeToken || null;
 }
 
-export function isClaudeCodeTokenValid(): boolean {
-  const token = getClaudeCodeToken();
+export async function isClaudeCodeTokenValid(userId: string): Promise<boolean> {
+  const token = await getClaudeCodeToken(userId);
   if (!token) return false;
 
   const now = Date.now();
   return token.expires_at > (now + CLAUDECODE_CONFIG.REFRESH_THRESHOLD_MS);
 }
 
-export function needsClaudeCodeTokenRefresh(): boolean {
-  const token = getClaudeCodeToken();
+export async function needsClaudeCodeTokenRefresh(userId: string): Promise<boolean> {
+  const token = await getClaudeCodeToken(userId);
   if (!token) return false;
 
   const now = Date.now();
@@ -80,15 +67,15 @@ export function needsClaudeCodeTokenRefresh(): boolean {
   return expiresAt <= (now + CLAUDECODE_CONFIG.REFRESH_THRESHOLD_MS);
 }
 
-export function saveClaudeCodeToken(
+export async function saveClaudeCodeToken(
+  userId: string,
   token: ClaudeCodeOAuthToken,
   email?: string,
   setAsActiveProvider = false
-): void {
-  const settings = loadSettings();
+): Promise<void> {
+  const settings = await loadSettings(userId);
 
   settings.claudecodeToken = token;
-
   settings.claudecodeAuth = {
     isAuthenticated: true,
     email: email || settings.claudecodeAuth?.email,
@@ -100,56 +87,36 @@ export function saveClaudeCodeToken(
     settings.llmProvider = "claudecode";
   }
 
-  saveSettings(settings);
-
-  cachedToken = token;
-  cachedAuthState = settings.claudecodeAuth;
+  await saveSettings(settings, userId);
 }
 
-export function clearClaudeCodeAuth(): void {
-  const settings = loadSettings();
+export async function clearClaudeCodeAuth(userId: string): Promise<void> {
+  const settings = await loadSettings(userId);
   delete settings.claudecodeToken;
   settings.claudecodeAuth = { isAuthenticated: false };
-  saveSettings(settings);
-
-  cachedToken = null;
-  cachedAuthState = { isAuthenticated: false };
+  await saveSettings(settings, userId);
 }
 
-export function invalidateClaudeCodeAuthCache(): void {
-  cachedToken = null;
-  cachedAuthState = null;
-}
-
-export function getClaudeCodeAccessToken(): string | null {
-  const token = getClaudeCodeToken();
-  if (!token) return null;
-
-  if (token.expires_at <= Date.now()) {
-    return null;
-  }
-
+export async function getClaudeCodeAccessToken(userId: string): Promise<string | null> {
+  const token = await getClaudeCodeToken(userId);
+  if (!token || token.expires_at <= Date.now()) return null;
   return token.access_token;
 }
 
-export function isClaudeCodeAuthenticated(): boolean {
-  const state = getClaudeCodeAuthState();
+export async function isClaudeCodeAuthenticated(userId: string): Promise<boolean> {
+  const state = await getClaudeCodeAuthState(userId);
   if (!state.isAuthenticated) return false;
-  return isClaudeCodeTokenValid();
+  return await isClaudeCodeTokenValid(userId);
 }
 
-export async function refreshClaudeCodeToken(): Promise<boolean> {
-  const token = getClaudeCodeToken();
-  if (!token?.refresh_token) {
-    return false;
-  }
+export async function refreshClaudeCodeToken(userId: string): Promise<boolean> {
+  const token = await getClaudeCodeToken(userId);
+  if (!token?.refresh_token) return false;
 
   try {
     const response = await fetch(CLAUDECODE_OAUTH.TOKEN_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         grant_type: "refresh_token",
         refresh_token: token.refresh_token,
@@ -157,42 +124,31 @@ export async function refreshClaudeCodeToken(): Promise<boolean> {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[ClaudeCodeAuth] Token refresh failed:", response.status, errorText);
-      return false;
+    if (!response.ok) return false;
+
+    const data = await response.json();
+    if (data.access_token) {
+      const newToken: ClaudeCodeOAuthToken = {
+        type: "oauth",
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || token.refresh_token,
+        expires_at: Date.now() + (data.expires_in || 3600) * 1000,
+      };
+
+      await saveClaudeCodeToken(userId, newToken);
+      return true;
     }
-
-    const data = await response.json() as {
-      access_token?: string;
-      refresh_token?: string;
-      expires_in?: number;
-    };
-
-    if (!data.access_token || typeof data.expires_in !== "number") {
-      console.error("[ClaudeCodeAuth] Token refresh response missing fields:", data);
-      return false;
-    }
-
-    const newToken: ClaudeCodeOAuthToken = {
-      type: "oauth",
-      access_token: data.access_token,
-      refresh_token: data.refresh_token || token.refresh_token,
-      expires_at: Date.now() + data.expires_in * 1000,
-    };
-
-    saveClaudeCodeToken(newToken);
-    return true;
+    return false;
   } catch (error) {
-    console.error("[ClaudeCodeAuth] Token refresh error:", error);
+    console.error("[ClaudeCodeAuth] Refresh error:", error);
     return false;
   }
 }
 
-export async function ensureValidClaudeCodeToken(): Promise<boolean> {
-  if (isClaudeCodeTokenValid()) return true;
-  if (needsClaudeCodeTokenRefresh()) {
-    return refreshClaudeCodeToken();
+export async function ensureValidClaudeCodeToken(userId: string): Promise<boolean> {
+  if (await isClaudeCodeTokenValid(userId)) return true;
+  if (await needsClaudeCodeTokenRefresh(userId)) {
+    return await refreshClaudeCodeToken(userId);
   }
   return false;
 }
@@ -200,45 +156,27 @@ export async function ensureValidClaudeCodeToken(): Promise<boolean> {
 export async function exchangeClaudeCodeAuthorizationCode(
   code: string,
   verifier: string,
+  userId: string,
   redirectUri: string = CLAUDECODE_OAUTH.REDIRECT_URI,
   state?: string,
 ): Promise<{ access_token: string; refresh_token: string; expires_in: number } | null> {
-  const payload: Record<string, string | undefined> = {
-    grant_type: "authorization_code",
-    client_id: CLAUDECODE_OAUTH.CLIENT_ID,
-    code,
-    code_verifier: verifier,
-    redirect_uri: redirectUri,
-    state,
-  };
-
-  // Remove undefined values
-  const cleanPayload = Object.fromEntries(
-    Object.entries(payload).filter(([, v]) => v !== undefined)
-  );
-
   const response = await fetch(CLAUDECODE_OAUTH.TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(cleanPayload),
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      client_id: CLAUDECODE_OAUTH.CLIENT_ID,
+      code,
+      code_verifier: verifier,
+      redirect_uri: redirectUri,
+      state,
+    }),
   });
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    console.error("[ClaudeCodeAuth] Code exchange failed:", response.status, text);
-    return null;
-  }
+  if (!response.ok) return null;
 
-  const data = await response.json() as {
-    access_token?: string;
-    refresh_token?: string;
-    expires_in?: number;
-  };
-
-  if (!data.access_token || typeof data.expires_in !== "number") {
-    console.error("[ClaudeCodeAuth] Code exchange response missing fields:", data);
-    return null;
-  }
+  const data = await response.json();
+  if (!data.access_token) return null;
 
   return {
     access_token: data.access_token,

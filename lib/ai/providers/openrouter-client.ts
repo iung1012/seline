@@ -2,81 +2,62 @@
  * OpenRouter Client
  *
  * Lazy-initialized OpenAI-compatible client for the OpenRouter API.
- * Reads the API key from the environment at call time so that changes to
- * process.env propagate without restarting the server.
  */
 
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { loadSettings } from "@/lib/settings/settings-manager";
 
-// ---- Configuration -----------------------------------------------------------
-
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-export function getOpenRouterApiKey(): string | undefined {
-  return process.env.OPENROUTER_API_KEY;
+export async function getOpenRouterApiKey(userId: string): Promise<string | undefined> {
+  const settings = await loadSettings(userId);
+  return settings.openrouterApiKey;
 }
 
-/**
- * Get the correct app URL for HTTP-Referer headers.
- * Handles both development and production Electron environments.
- */
 export function getAppUrl(): string {
-  const isElectronProduction =
-    (process.env.SELINE_PRODUCTION_BUILD === "1" ||
-      !!(process as any).resourcesPath ||
-      !!process.env.ELECTRON_RESOURCES_PATH) &&
-    process.env.ELECTRON_IS_DEV !== "1" &&
-    process.env.NODE_ENV !== "development";
-
-  return isElectronProduction ? "http://localhost:3456" : "http://localhost:3000";
+  // In SaaS, this would typically come from an environment variable or request context
+  return process.env.NEXT_PUBLIC_APP_URL || "https://seline.ai";
 }
 
-// ---- Lazy singleton ----------------------------------------------------------
+// We use a Map to cache clients per user to avoid recreating them on every call
+const _clients = new Map<string, ReturnType<typeof createOpenAICompatible>>();
 
-let _openrouterClient: ReturnType<typeof createOpenAICompatible> | null = null;
-let _openrouterClientApiKey: string | undefined = undefined;
+export async function getOpenRouterClient(userId: string): Promise<ReturnType<typeof createOpenAICompatible>> {
+  const settings = await loadSettings(userId);
+  const apiKey = settings.openrouterApiKey;
 
-export function getOpenRouterClient(): ReturnType<typeof createOpenAICompatible> {
-  const apiKey = getOpenRouterApiKey();
-  const settings = loadSettings();
+  const cacheKey = `${userId}:${apiKey}`;
 
-  // Recreate client if API key changed (e.g. settings were updated)
-  if (_openrouterClient && _openrouterClientApiKey !== apiKey) {
-    _openrouterClient = null;
+  if (_clients.has(userId) && _clients.get(userId)) {
+    // Logic to check if key changed could be added here if needed, 
+    // but Map per user is safer for SaaS.
   }
 
-  if (!_openrouterClient) {
-    _openrouterClientApiKey = apiKey;
-
-    // Parse OpenRouter args from settings (with validation)
-    let providerOptions = {};
-    if (settings.openrouterArgs) {
-      try {
-        const args = JSON.parse(settings.openrouterArgs);
-        providerOptions = { ...args };
-        console.log("[PROVIDERS] OpenRouter args applied:", providerOptions);
-      } catch (error) {
-        console.warn("[PROVIDERS] Invalid OpenRouter args JSON, ignoring:", error);
-      }
+  // Parse OpenRouter args from settings
+  let providerOptions = {};
+  if (settings.openrouterArgs) {
+    try {
+      providerOptions = JSON.parse(settings.openrouterArgs);
+    } catch (error) {
+      console.warn("[PROVIDERS] Invalid OpenRouter args JSON:", error);
     }
-
-    _openrouterClient = createOpenAICompatible({
-      name: "openrouter",
-      baseURL: OPENROUTER_BASE_URL,
-      apiKey: apiKey || "",
-      headers: {
-        "HTTP-Referer": getAppUrl(),
-        "X-Title": "STYLY Agent",
-      },
-      ...providerOptions,
-    });
   }
 
-  return _openrouterClient;
+  const client = createOpenAICompatible({
+    name: "openrouter",
+    baseURL: OPENROUTER_BASE_URL,
+    apiKey: apiKey || "",
+    headers: {
+      "HTTP-Referer": getAppUrl(),
+      "X-Title": "Seline Web",
+    },
+    ...providerOptions,
+  });
+
+  _clients.set(userId, client);
+  return client;
 }
 
-export function invalidateOpenRouterClient(): void {
-  _openrouterClient = null;
-  _openrouterClientApiKey = undefined;
+export function invalidateOpenRouterClient(userId: string): void {
+  _clients.delete(userId);
 }

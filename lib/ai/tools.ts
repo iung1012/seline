@@ -28,7 +28,6 @@ export {
 export {
   createWan22VideoTool,
   createWan22PixelVideoTool,
-  createVideoAssemblyTool,
 } from "@/lib/ai/tools/video-tools";
 
 // OpenRouter image tools (Flux2 Flex, GPT-5 Image Mini, GPT-5 Image,

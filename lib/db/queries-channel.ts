@@ -1,9 +1,9 @@
-import { db } from "./sqlite-client";
+import { db } from "./client";
 import {
   channelConnections,
   channelConversations,
   channelMessages,
-} from "./sqlite-schema";
+} from "./schema";
 import type {
   ChannelConnection,
   NewChannelConnection,
@@ -11,7 +11,7 @@ import type {
   NewChannelConversation,
   ChannelMessage,
   NewChannelMessage,
-} from "./sqlite-schema";
+} from "./schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 
 // ============================================================================
@@ -29,7 +29,7 @@ export async function updateChannelConnection(
 ): Promise<ChannelConnection | undefined> {
   const [connection] = await db
     .update(channelConnections)
-    .set({ ...data, updatedAt: new Date().toISOString() })
+    .set({ ...data, updatedAt: new Date() })
     .where(eq(channelConnections.id, id))
     .returning();
   return connection;
@@ -59,12 +59,6 @@ export async function deleteChannelConnection(id: string): Promise<void> {
   await db.delete(channelConnections).where(eq(channelConnections.id, id));
 }
 
-/**
- * Find an active (connected) channel connection for a user by channel type.
- * Used by scheduleTask to resolve delivery channel when user explicitly
- * requests a specific channel (e.g., "telegram") but the schedule isn't
- * being created from that channel's session.
- */
 export async function findActiveChannelConnection(
   userId: string,
   channelType: string
@@ -129,7 +123,7 @@ export async function updateChannelConversation(
 ): Promise<ChannelConversation | undefined> {
   const [conversation] = await db
     .update(channelConversations)
-    .set({ ...data, updatedAt: new Date().toISOString() })
+    .set({ ...data, updatedAt: new Date() })
     .where(eq(channelConversations.id, id))
     .returning();
   return conversation;
@@ -137,24 +131,19 @@ export async function updateChannelConversation(
 
 export async function touchChannelConversation(
   id: string,
-  lastMessageAt?: string
+  lastMessageAt?: Date
 ): Promise<ChannelConversation | undefined> {
   const [conversation] = await db
     .update(channelConversations)
     .set({
-      lastMessageAt: lastMessageAt ?? new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      lastMessageAt: lastMessageAt ?? new Date(),
+      updatedAt: new Date(),
     })
     .where(eq(channelConversations.id, id))
     .returning();
   return conversation;
 }
 
-/**
- * Find the most recent channel conversation for a given connection.
- * Used by scheduleTask to resolve peerId/threadId when the user
- * explicitly requests delivery to a specific channel type.
- */
 export async function findRecentChannelConversation(
   connectionId: string
 ): Promise<ChannelConversation | undefined> {
